@@ -3,16 +3,19 @@ use std::ptr;
 use std::slice;
 use std::thread;
 use std::io::Read;
-use std::fs::File;
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender, Receiver};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::AsFd;
 use std::ffi::CString;
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
+use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use crate::framebuffer::Display;
 use crate::settings::ButtonScheme;
 use crate::device::CURRENT_DEVICE;
 use crate::geom::{Point, LinearDir};
-use anyhow::{Error, Context};
+use anyhow::Error;
 
 // Event types
 pub const EV_SYN: u16 = 0x00;
@@ -54,6 +57,8 @@ pub const KEY_HOME: u16 = 102;
 pub const KEY_LIGHT: u16 = 90;
 pub const KEY_BACKWARD: u16 = 193;
 pub const KEY_FORWARD: u16 = 194;
+pub const KEY_UP: u16 = 103;
+pub const KEY_DOWN: u16 = 108;
 pub const PEN_ERASE: u16 = 331;
 pub const PEN_HIGHLIGHT: u16 = 332;
 pub const SLEEP_COVER: [u16; 2] = [59, 35];
@@ -150,6 +155,10 @@ impl ButtonCode {
             KEY_LIGHT => ButtonCode::Light,
             KEY_BACKWARD => resolve_button_direction(LinearDir::Backward, rotation, button_scheme),
             KEY_FORWARD => resolve_button_direction(LinearDir::Forward, rotation, button_scheme),
+            // External (BT remote) buttons: fixed mapping, independent of
+            // device rotation and ButtonScheme.
+            KEY_UP => ButtonCode::Backward,
+            KEY_DOWN => ButtonCode::Forward,
             PEN_ERASE => ButtonCode::Erase,
             PEN_HIGHLIGHT => ButtonCode::Highlight,
             _ => ButtonCode::Raw(code)
@@ -230,38 +239,148 @@ pub fn raw_events(paths: Vec<String>) -> (Sender<InputEvent>, Receiver<InputEven
     (tx2, rx)
 }
 
+const INPUT_DIR: &str = "/dev/input";
+
+struct InputSource {
+    file: File,
+    canonical: PathBuf,
+}
+
+fn try_open_input(path: &Path, inputs: &mut Vec<InputSource>, seen: &mut FxHashSet<PathBuf>) -> bool {
+    let canonical = match fs::canonicalize(path) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    if seen.contains(&canonical) {
+        return false;
+    }
+    match File::open(path) {
+        Ok(file) => {
+            seen.insert(canonical.clone());
+            inputs.push(InputSource { file, canonical });
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn scan_input_dir(inputs: &mut Vec<InputSource>, seen: &mut FxHashSet<PathBuf>) {
+    let entries = match fs::read_dir(INPUT_DIR) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_event = path.file_name()
+                           .and_then(|n| n.to_str())
+                           .is_some_and(|n| n.starts_with("event"));
+        if is_event {
+            try_open_input(&path, inputs, seen);
+        }
+    }
+}
+
+fn drain_inotify(inotify: &Inotify, inputs: &mut Vec<InputSource>, seen: &mut FxHashSet<PathBuf>) {
+    let events = match inotify.read_events() {
+        Ok(events) => events,
+        Err(_) => return,
+    };
+    let trigger = AddWatchFlags::IN_CREATE | AddWatchFlags::IN_ATTRIB;
+    for event in events {
+        if !event.mask.intersects(trigger) {
+            continue;
+        }
+        let Some(name) = event.name.as_ref().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with("event") {
+            let path = Path::new(INPUT_DIR).join(name);
+            try_open_input(&path, inputs, seen);
+        }
+        // Removal is handled via per-fd read errors in the main loop;
+        // we don't need to act on IN_DELETE here.
+    }
+}
+
 pub fn parse_raw_events(paths: &[String], tx: &Sender<InputEvent>) -> Result<(), Error> {
-    let mut files = Vec::new();
-    let mut pfds = Vec::new();
+    let mut inputs: Vec<InputSource> = Vec::new();
+    let mut seen: FxHashSet<PathBuf> = FxHashSet::default();
 
     for path in paths.iter() {
-        let file = File::open(path)
-                        .with_context(|| format!("can't open input file {}", path))?;
-        let fd = file.as_raw_fd();
-        files.push(file);
-        pfds.push(libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        });
+        let p = Path::new(path);
+        if !try_open_input(p, &mut inputs, &mut seen) {
+            // Preserve the original strictness: if a configured static path
+            // can't be opened (and isn't just a duplicate), surface an error.
+            if !seen.contains(&fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())) {
+                return Err(Error::msg(format!("can't open input file {}", path)));
+            }
+        }
+    }
+
+    // Pick up any other evdev nodes already present (e.g. a BT remote that
+    // was connected before Plato started).
+    scan_input_dir(&mut inputs, &mut seen);
+
+    // Watch /dev/input for new evdev nodes (BT remote connect/reconnect).
+    let inotify = Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC).ok();
+    if let Some(ino) = inotify.as_ref() {
+        let _ = ino.add_watch(INPUT_DIR, AddWatchFlags::IN_CREATE | AddWatchFlags::IN_ATTRIB);
     }
 
     loop {
-        let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, -1) };
-        if ret < 0 {
+        let mut pfds: Vec<PollFd> = inputs.iter()
+            .map(|i| PollFd::new(i.file.as_fd(), PollFlags::POLLIN))
+            .collect();
+        let inotify_idx = inotify.as_ref().map(|ino| {
+            pfds.push(PollFd::new(ino.as_fd(), PollFlags::POLLIN));
+            pfds.len() - 1
+        });
+
+        if poll(&mut pfds, PollTimeout::NONE).is_err() {
             break;
         }
-        for (pfd, mut file) in pfds.iter().zip(&files) {
-            if pfd.revents & libc::POLLIN != 0 {
+
+        let input_revents: Vec<PollFlags> = pfds[..inputs.len()].iter()
+            .map(|p| p.revents().unwrap_or_else(PollFlags::empty))
+            .collect();
+        let inotify_ready = inotify_idx
+            .and_then(|i| pfds[i].revents())
+            .is_some_and(|r| r.contains(PollFlags::POLLIN));
+        drop(pfds);
+
+        let mut to_drop: Vec<usize> = Vec::new();
+        for idx in 0..inputs.len() {
+            let revents = input_revents[idx];
+            if revents.contains(PollFlags::POLLIN) {
                 let mut input_event = MaybeUninit::<InputEvent>::uninit();
-                unsafe {
+                let read_result = unsafe {
                     let event_slice = slice::from_raw_parts_mut(input_event.as_mut_ptr() as *mut u8,
                                                                 mem::size_of::<InputEvent>());
-                    if file.read_exact(event_slice).is_err() {
-                        break;
+                    inputs[idx].file.read_exact(event_slice)
+                };
+                match read_result {
+                    Ok(()) => {
+                        tx.send(unsafe { input_event.assume_init() }).ok();
                     }
-                    tx.send(input_event.assume_init()).ok();
+                    Err(_) => to_drop.push(idx),
                 }
+            } else if revents.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL) {
+                to_drop.push(idx);
+            }
+        }
+
+        if inotify_ready {
+            if let Some(ino) = inotify.as_ref() {
+                drain_inotify(ino, &mut inputs, &mut seen);
+            }
+        }
+
+        if !to_drop.is_empty() {
+            to_drop.sort_unstable();
+            to_drop.dedup();
+            for idx in to_drop.into_iter().rev() {
+                let dropped = inputs.remove(idx);
+                seen.remove(&dropped.canonical);
             }
         }
     }
