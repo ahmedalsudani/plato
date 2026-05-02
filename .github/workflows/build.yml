@@ -1,0 +1,79 @@
+name: build
+
+on:
+  push:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-arm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure podman is installed
+        run: command -v podman || sudo apt-get install -y --no-install-recommends podman
+
+      - name: Restore container image
+        id: image-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/plato-build-image.tar
+          key: plato-image-${{ hashFiles('Dockerfile') }}
+
+      - name: Build or load image
+        run: |
+          if [ -f ~/plato-build-image.tar ]; then
+            podman load -i ~/plato-build-image.tar
+          else
+            podman build -t plato-build .
+            podman save -o ~/plato-build-image.tar plato-build
+          fi
+
+      - name: Cache compiled C dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            libs
+            thirdparty
+          key: plato-cdeps-${{ hashFiles('Dockerfile', 'thirdparty/download.sh', 'thirdparty/build.sh', 'thirdparty/*/build-kobo.sh', 'thirdparty/*/kobo.patch') }}
+          restore-keys: |
+            plato-cdeps-
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/plato-build/cargo-registry
+            ~/.cache/plato-build/cargo-git
+            target
+          key: plato-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            plato-cargo-
+
+      - name: Compute artifact metadata
+        id: meta
+        run: |
+          branch="${GITHUB_REF_NAME//\//-}"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build inside container
+        run: |
+          mkdir -p ~/.cache/plato-build/cargo-registry ~/.cache/plato-build/cargo-git
+          podman run --rm \
+            -v "$PWD:/workspace" \
+            -v "$HOME/.cache/plato-build/cargo-registry:/usr/local/cargo/registry" \
+            -v "$HOME/.cache/plato-build/cargo-git:/usr/local/cargo/git" \
+            plato-build \
+            sh -c './build.sh slow && ./dist.sh'
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plato-${{ steps.meta.outputs.branch }}-${{ steps.meta.outputs.sha }}
+          path: dist/
+          retention-days: 90
+          if-no-files-found: error

@@ -37,6 +37,16 @@ rustup target add arm-unknown-linux-gnueabihf
 ./dist.sh
 ```
 
+### Building with a container
+
+If you'd rather not install the cross toolchain on your host, the build is also packaged as a [podman](https://podman.io) image. With rootless podman installed:
+
+```sh
+./scripts/build-in-container.sh
+```
+
+The script builds the image (a one-time cost) and then runs `./build.sh slow && ./dist.sh` inside it. The `dist/` directory ends up in the project root, owned by your host user. The cargo registry and git index are kept in named volumes so subsequent runs are fast.
+
 ## Developer Tools
 
 Install the required dependencies: *MuPDF 1.27.0*, *DjVuLibre*, *FreeType*, *HarfBuzz*.
