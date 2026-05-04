@@ -10,20 +10,28 @@
 mkdir -p dist/libs
 mkdir dist/dictionaries
 
-cp libs/libz.so dist/libs/libz.so.1
-cp libs/libbz2.so dist/libs/libbz2.so.1.0
+copy_with_soname() {
+	src=$1
+	dest_dir=$2
+	soname=$(arm-linux-gnueabihf-readelf -d "$src" | awk '/SONAME/ { gsub(/[][]/, "", $NF); print $NF }')
+	[ -n "$soname" ] || soname=$(basename "$src")
+	cp "$src" "$dest_dir/$soname"
+}
 
-cp libs/libpng16.so dist/libs/libpng16.so.16
-cp libs/libjpeg.so dist/libs/libjpeg.so.9
-cp libs/libopenjp2.so dist/libs/libopenjp2.so.7
-cp libs/libjbig2dec.so dist/libs/libjbig2dec.so.0
+copy_with_soname libs/libz.so dist/libs
+copy_with_soname libs/libbz2.so dist/libs
 
-cp libs/libfreetype.so dist/libs/libfreetype.so.6
-cp libs/libharfbuzz.so dist/libs/libharfbuzz.so.0
+copy_with_soname libs/libpng16.so dist/libs
+copy_with_soname libs/libjpeg.so dist/libs
+copy_with_soname libs/libopenjp2.so dist/libs
+copy_with_soname libs/libjbig2dec.so dist/libs
 
-cp libs/libgumbo.so dist/libs/libgumbo.so.2
-cp libs/libdjvulibre.so dist/libs/libdjvulibre.so.21
-cp libs/libmupdf.so dist/libs
+copy_with_soname libs/libfreetype.so dist/libs
+copy_with_soname libs/libharfbuzz.so dist/libs
+
+copy_with_soname libs/libgumbo.so dist/libs
+copy_with_soname libs/libdjvulibre.so dist/libs
+copy_with_soname libs/libmupdf.so dist/libs
 
 cp -R hyphenation-patterns dist
 cp -R keyboard-layouts dist
