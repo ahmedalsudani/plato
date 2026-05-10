@@ -156,6 +156,11 @@ fn resume(id: TaskId, tasks: &mut Vec<Task>, view: &mut dyn View, hub: &Sender<E
                     .status()
                     .ok();
         }
+        if context.settings.bluetooth {
+            Command::new("scripts/bluetooth-enable.sh")
+                    .status()
+                    .ok();
+        }
     }
     if id == TaskId::Suspend || id == TaskId::PrepareSuspend {
         tasks.retain(|task| task.id != TaskId::PrepareSuspend);
@@ -195,6 +200,22 @@ fn set_wifi(enable: bool, context: &mut Context) {
                 .status()
                 .ok();
         context.online = false;
+    }
+}
+
+fn set_bluetooth(enable: bool, context: &mut Context) {
+    if context.settings.bluetooth == enable {
+        return;
+    }
+    context.settings.bluetooth = enable;
+    if context.settings.bluetooth {
+        Command::new("scripts/bluetooth-enable.sh")
+                .status()
+                .ok();
+    } else {
+        Command::new("scripts/bluetooth-disable.sh")
+                .status()
+                .ok();
     }
 }
 
@@ -303,6 +324,12 @@ pub fn run() -> Result<(), Error> {
         Command::new("scripts/wifi-enable.sh").status().ok();
     } else {
         Command::new("scripts/wifi-disable.sh").status().ok();
+    }
+
+    if context.settings.bluetooth {
+        Command::new("scripts/bluetooth-enable.sh").status().ok();
+    } else {
+        Command::new("scripts/bluetooth-disable.sh").status().ok();
     }
 
     if context.settings.frontlight {
@@ -927,6 +954,12 @@ pub fn run() -> Result<(), Error> {
             },
             Event::Select(EntryId::ToggleWifi) => {
                 set_wifi(!context.settings.wifi, &mut context);
+            },
+            Event::SetBluetooth(enable) => {
+                set_bluetooth(enable, &mut context);
+            },
+            Event::Select(EntryId::ToggleBluetooth) => {
+                set_bluetooth(!context.settings.bluetooth, &mut context);
             },
             Event::Select(EntryId::TakeScreenshot) => {
                 let name = Local::now().format("screenshot-%Y%m%d_%H%M%S.png");

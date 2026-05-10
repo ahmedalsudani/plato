@@ -588,6 +588,9 @@ fn main() -> Result<(), Error> {
                         }
                     }
                 },
+                Event::SetBluetooth(enable) => {
+                    context.settings.bluetooth = enable;
+                },
                 Event::Device(DeviceEvent::RotateScreen(n)) => {
                     tx.send(Event::Select(EntryId::Rotate(n))).ok();
                 },

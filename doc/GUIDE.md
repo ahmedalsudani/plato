@@ -16,7 +16,7 @@ The hyphenation bounds for a particular language can be overridden by creating a
 
 Dictionaries in the *StarDict* and *dictd* formats can be placed in the `dictionaries` directory. *StarDict* dictionaries should be placed as uncompressed folders containing an `.ifo` file. *Plato* doesn't support *StarDict* natively and will therefore convert all the *StarDict* dictionaries it might find in the `dictionaries` directory during startup. You can disable this behavior by uncommenting the corresponding line in `config.sh`.
 
-The four scripts `scripts/wifi-{pre,post}-{up,down}.sh` can be created with commands to run before or after the WiFi is enabled or disabled, respectively.
+The four scripts `scripts/wifi-{pre,post}-{up,down}.sh` can be created with commands to run before or after the WiFi is enabled or disabled, respectively. The same convention applies to Bluetooth via `scripts/bluetooth-{pre,post}-{up,down}.sh`.
 
 ## Upgrade
 
