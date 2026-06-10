@@ -517,6 +517,7 @@ pub enum EntryId {
     CleanUp,
     Sort(SortMethod),
     ReverseOrder,
+    SetReverseOrder(bool),
     EmptyTrash,
     Rename(PathBuf),
     Remove(PathBuf),

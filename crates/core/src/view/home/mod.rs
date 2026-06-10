@@ -74,6 +74,7 @@ struct Fetcher {
     full_path: PathBuf,
     process: Child,
     sort_method: Option<SortMethod>,
+    reverse_order: Option<bool>,
     first_column: Option<FirstColumn>,
     second_column: Option<SecondColumn>,
 }
@@ -1256,6 +1257,9 @@ impl Home {
                     if let Some(sort_method) = fetcher.sort_method {
                         hub.send(Event::Select(EntryId::Sort(sort_method))).ok();
                     }
+                    if let Some(reverse_order) = fetcher.reverse_order {
+                        hub.send(Event::Select(EntryId::SetReverseOrder(reverse_order))).ok();
+                    }
                     if let Some(first_column) = fetcher.first_column {
                         hub.send(Event::Select(EntryId::FirstColumn(first_column))).ok();
                     }
@@ -1287,10 +1291,14 @@ impl Home {
         match self.spawn_child(library_path, &save_path, &hook.program, context.settings.wifi, context.online, hub) {
             Ok(process) => {
                 let mut sort_method = hook.sort_method;
+                let mut reverse_order = hook.reverse_order;
                 let mut first_column = hook.first_column;
                 let mut second_column = hook.second_column;
                 if let Some(sort_method) = sort_method.replace(self.sort_method) {
                     hub.send(Event::Select(EntryId::Sort(sort_method))).ok();
+                }
+                if let Some(reverse_order) = reverse_order.replace(self.reverse_order) {
+                    hub.send(Event::Select(EntryId::SetReverseOrder(reverse_order))).ok();
                 }
                 let selected_library = context.settings.selected_library;
                 if let Some(first_column) = first_column.replace(context.settings.libraries[selected_library].first_column) {
@@ -1301,7 +1309,7 @@ impl Home {
                 }
                 self.background_fetchers.insert(process.id(),
                                                 Fetcher { path: hook.path.clone(), full_path: save_path, process,
-                                                          sort_method, first_column, second_column });
+                                                          sort_method, reverse_order, first_column, second_column });
             },
             Err(e) => eprintln!("Can't spawn child: {:#}.", e),
         }
@@ -1529,6 +1537,10 @@ impl View for Home {
             Event::Select(EntryId::ReverseOrder) => {
                 let next_value = !self.reverse_order;
                 self.set_reverse_order(next_value, hub, rq, context);
+                true
+            },
+            Event::Select(EntryId::SetReverseOrder(value)) => {
+                self.set_reverse_order(value, hub, rq, context);
                 true
             },
             Event::Select(EntryId::LoadLibrary(index)) => {

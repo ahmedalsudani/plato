@@ -7,6 +7,7 @@ Here's an example hook, that launches the default article fetcher included in
 path = "Articles"
 program = "bin/article_fetcher/article_fetcher"
 sort-method = "added"
+reverse-order = true
 first-column = "title-and-author"
 second-column = "progress"
 ```
@@ -15,9 +16,9 @@ The above chunk needs to be added after one of the `[[libraries]]` section.
 
 `path` is the path of the directory that will trigger the hook. `program` is
 the path to the executable associated with this hook. The `sort-method`,
-`first-column` and `second-column` keys are optional. When specified, they will
-override the *home*'s settings of the same name, while `path` is being
-selected.
+`reverse-order`, `first-column` and `second-column` keys are optional. When
+specified, they will override the *home*'s settings of the same name, while
+`path` is being selected.
 
 The *Toogle Select* sub-menu of the library menu can be used to trigger a hook
 when there's no imported documents in `path`. Otherwise, you can just tap the

@@ -281,6 +281,7 @@ pub struct Hook {
     pub path: PathBuf,
     pub program: PathBuf,
     pub sort_method: Option<SortMethod>,
+    pub reverse_order: Option<bool>,
     pub first_column: Option<FirstColumn>,
     pub second_column: Option<SecondColumn>,
 }
@@ -291,6 +292,7 @@ impl Default for Hook {
             path: PathBuf::default(),
             program: PathBuf::default(),
             sort_method: None,
+            reverse_order: None,
             first_column: None,
             second_column: None,
         }
@@ -503,6 +505,7 @@ impl Default for Settings {
                             path: PathBuf::from("Articles"),
                             program: PathBuf::from("bin/article_fetcher/article_fetcher"),
                             sort_method: Some(SortMethod::Added),
+                            reverse_order: None,
                             first_column: Some(FirstColumn::TitleAndAuthor),
                             second_column: Some(SecondColumn::Progress),
                         }
