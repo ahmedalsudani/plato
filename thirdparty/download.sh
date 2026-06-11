@@ -4,7 +4,8 @@ set -e
 
 declare -A urls=(
 	# Compression
-	["zlib"]="https://www.zlib.net/fossils/zlib-1.3.1.tar.gz"
+	# zlib.net rejects non-browser clients (HTTP 415); use the official GitHub mirror.
+	["zlib"]="https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
 	["bzip2"]="https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
 	# Images
 	["libpng"]="https://download.sourceforge.net/libpng/libpng-1.6.53.tar.gz"
