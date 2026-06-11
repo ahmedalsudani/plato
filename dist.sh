@@ -32,6 +32,7 @@ copy_with_soname libs/libharfbuzz.so dist/libs
 copy_with_soname libs/libgumbo.so dist/libs
 copy_with_soname libs/libdjvulibre.so dist/libs
 copy_with_soname libs/libmupdf.so dist/libs
+copy_with_soname libs/libstdc++.so dist/libs
 
 cp -R hyphenation-patterns dist
 cp -R keyboard-layouts dist

@@ -53,6 +53,10 @@ case "$method" in
 		cp thirdparty/gumbo/.libs/libgumbo.so libs
 		cp thirdparty/djvulibre/libdjvu/.libs/libdjvulibre.so libs
 		cp thirdparty/mupdf/build/release/libmupdf.so libs
+
+		# The C++ libs reference CXXABI/GLIBCXX versions newer than the
+		# device's stock libstdc++, so ship the toolchain's.
+		cp "$(arm-linux-gnueabihf-g++ -print-file-name=libstdc++.so.6)" libs/libstdc++.so
 		;;
 
 	skip)
