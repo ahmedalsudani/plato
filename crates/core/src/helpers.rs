@@ -14,7 +14,7 @@ use serde::de::{self, Visitor};
 use lazy_static::lazy_static;
 use entities::ENTITIES;
 use walkdir::DirEntry;
-use anyhow::{Error, Context};
+use anyhow::{Error, Context, format_err};
 
 lazy_static! {
     pub static ref CHARACTER_ENTITIES: FxHashMap<&'static str, &'static str> = {
@@ -98,6 +98,21 @@ pub fn save_toml<T, P: AsRef<Path>>(data: &T, path: P) -> Result<(), Error> wher
     fs::write(path.as_ref(), &s)
        .with_context(|| format!("can't write to file {}", path.as_ref().display()))
        .map_err(Into::into)
+}
+
+// Make `path` absolute without resolving a symbolic link in its final
+// component: busybox needs the file name to select the applet to run.
+pub fn absolutize<P: AsRef<Path>>(path: P) -> Result<PathBuf, Error> {
+    let path = path.as_ref();
+    let file_name = path.file_name()
+                        .ok_or_else(|| format_err!("missing file name: {}", path.display()))?;
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let parent = parent.canonicalize()
+                       .with_context(|| format!("can't canonicalize {}", parent.display()))?;
+    Ok(parent.join(file_name))
 }
 
 pub trait Fingerprint {
@@ -246,6 +261,35 @@ impl IsHidden for DirEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_absolutize() {
+        use std::env;
+        use std::fs::{self, File};
+        use std::os::unix::fs::symlink;
+
+        let dir = env::temp_dir().join(format!("plato-absolutize-{}", std::process::id()));
+        fs::create_dir_all(dir.join("subdir")).unwrap();
+        File::create(dir.join("subdir").join("real")).unwrap();
+        symlink("real", dir.join("subdir").join("link")).unwrap();
+        symlink("subdir", dir.join("subdir-link")).unwrap();
+
+        let canon_dir = dir.canonicalize().unwrap();
+
+        // The symlink in the final component isn't resolved.
+        assert_eq!(absolutize(dir.join("subdir").join("link")).unwrap(),
+                   canon_dir.join("subdir").join("link"));
+        // Symlinks in the parent components are resolved.
+        assert_eq!(absolutize(dir.join("subdir-link").join("real")).unwrap(),
+                   canon_dir.join("subdir").join("real"));
+        // A bare file name is resolved relative to the current directory.
+        assert_eq!(absolutize(Path::new("Cargo.toml")).unwrap(),
+                   env::current_dir().unwrap().canonicalize().unwrap().join("Cargo.toml"));
+        // A path without a file name is an error.
+        assert!(absolutize(Path::new("..")).is_err());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn test_entities() {

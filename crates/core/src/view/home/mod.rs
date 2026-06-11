@@ -25,6 +25,7 @@ use crate::view::{View, Event, Hub, Bus, RenderQueue, RenderData};
 use crate::view::{Id, ID_FEEDER, ViewId, EntryId, EntryKind};
 use crate::view::{SMALL_BAR_HEIGHT, BIG_BAR_HEIGHT, THICKNESS_MEDIUM};
 use crate::settings::{Hook, LibraryMode, FirstColumn, SecondColumn};
+use crate::helpers::absolutize;
 use crate::view::common::{toggle_main_menu, toggle_battery_menu, toggle_clock_menu};
 use crate::view::common::{locate, rlocate, locate_by_id};
 use crate::view::filler::Filler;
@@ -1316,7 +1317,7 @@ impl Home {
     }
 
     fn spawn_child(&mut self, library_path: &Path, save_path: &Path, program: &Path, wifi: bool, online: bool, hub: &Hub) -> Result<Child, Error> {
-        let path = program.canonicalize()?;
+        let path = absolutize(program)?;
         let parent = path.parent()
                          .unwrap_or_else(|| Path::new(""));
         let mut process = Command::new(&path)
