@@ -1320,6 +1320,8 @@ impl Home {
         let path = absolutize(program)?;
         let parent = path.parent()
                          .unwrap_or_else(|| Path::new(""));
+        eprintln!("Spawning fetcher: cd {:?} && {:?} {:?} {:?} {} {}",
+                  parent, path, library_path, save_path, wifi, online);
         let mut process = Command::new(&path)
                                  .current_dir(parent)
                                  .arg(library_path)
