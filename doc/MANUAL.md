@@ -95,7 +95,7 @@ Tap gestures by region:
 
 Swipe west/east to go to the next/previous page.
 
-Swipe north/south to scroll the page stream when the zoom mode is fit-to-width. If the scroll mode is set to *page*, the scrolling is limited to the current page.
+Swipe north/south to go to the next/previous page when the zoom mode is fit-to-page, and to scroll the page stream when the zoom mode is fit-to-width. If the scroll mode is set to *page*, the scrolling is limited to the current page.
 
 Rotate to change the screen orientation (one finger is the center, the other describes the desired rotation with a circular motion around the center: the two fingers should land and take off simultaneously).
 

@@ -2703,7 +2703,13 @@ impl View for Reader {
             },
             Event::Gesture(GestureEvent::Swipe { dir, start, end }) if self.rect.includes(start) => {
                 match self.view_port.zoom_mode {
-                    ZoomMode::FitToPage | ZoomMode::FitToWidth => {
+                    ZoomMode::FitToPage => {
+                        match dir {
+                            Dir::West | Dir::North => self.go_to_neighbor(CycleDir::Next, hub, rq, context),
+                            Dir::East | Dir::South => self.go_to_neighbor(CycleDir::Previous, hub, rq, context),
+                        };
+                    },
+                    ZoomMode::FitToWidth => {
                         match dir {
                             Dir::West => self.go_to_neighbor(CycleDir::Next, hub, rq, context),
                             Dir::East => self.go_to_neighbor(CycleDir::Previous, hub, rq, context),
