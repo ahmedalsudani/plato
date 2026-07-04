@@ -2702,6 +2702,12 @@ impl View for Reader {
                 true
             },
             Event::Gesture(GestureEvent::Swipe { dir, start, end }) if self.rect.includes(start) => {
+                // The bars act as a modal menu: gestures on the page area dismiss them.
+                if self.search.is_none() && locate::<TopBar>(self).is_some() {
+                    self.toggle_bars(Some(false), hub, rq, context);
+                    return true;
+                }
+
                 match self.view_port.zoom_mode {
                     ZoomMode::FitToPage => {
                         match dir {
@@ -2726,6 +2732,11 @@ impl View for Reader {
                 true
             },
             Event::Gesture(GestureEvent::SlantedSwipe { start, end, .. }) if self.rect.includes(start) => {
+                if self.search.is_none() && locate::<TopBar>(self).is_some() {
+                    self.toggle_bars(Some(false), hub, rq, context);
+                    return true;
+                }
+
                 if let ZoomMode::Custom(_) = self.view_port.zoom_mode {
                     self.directional_scroll(start - end, hub, rq, context);
                 }
@@ -3082,6 +3093,12 @@ impl View for Reader {
             },
             Event::Gesture(GestureEvent::Tap(center)) if self.rect.includes(center) => {
                 if self.focus.is_some() {
+                    return true;
+                }
+
+                // The bars act as a modal menu: a tap on the page area dismisses them.
+                if self.search.is_none() && locate::<TopBar>(self).is_some() {
+                    self.toggle_bars(Some(false), hub, rq, context);
                     return true;
                 }
 

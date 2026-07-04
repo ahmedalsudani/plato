@@ -93,6 +93,8 @@ Tap gestures by region:
 - *SWC* (South-West Corner): toggle the table of contents in normal mode, previous page in search mode.
 - *SEC* (South-East Corner): go to page in normal mode, next page in search mode.
 
+In normal mode, while the top and bottom bars are visible, tapping or swiping on the page area dismisses them instead of triggering the corresponding action.
+
 Swipe west/east to go to the next/previous page.
 
 Swipe north/south to go to the next/previous page when the zoom mode is fit-to-page, and to scroll the page stream when the zoom mode is fit-to-width. If the scroll mode is set to *page*, the scrolling is limited to the current page.
