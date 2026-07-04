@@ -143,7 +143,32 @@ fn schedule_task(id: TaskId, event: Event, delay: Duration, hub: &Sender<Event>,
     });
 }
 
-fn resume(id: TaskId, tasks: &mut Vec<Task>, view: &mut dyn View, hub: &Sender<Event>, rq: &mut RenderQueue, context: &mut Context) {
+fn join_net_enable(net_enable: &mut Option<thread::JoinHandle<()>>) {
+    if let Some(handle) = net_enable.take() {
+        handle.join().ok();
+    }
+}
+
+fn spawn_net_enable(wifi: bool, bluetooth: bool, net_enable: &mut Option<thread::JoinHandle<()>>) {
+    join_net_enable(net_enable);
+    if !wifi && !bluetooth {
+        return;
+    }
+    *net_enable = Some(thread::spawn(move || {
+        if wifi {
+            Command::new("scripts/wifi-enable.sh")
+                    .status()
+                    .ok();
+        }
+        if bluetooth {
+            Command::new("scripts/bluetooth-enable.sh")
+                    .status()
+                    .ok();
+        }
+    }));
+}
+
+fn resume(id: TaskId, tasks: &mut Vec<Task>, view: &mut dyn View, hub: &Sender<Event>, rq: &mut RenderQueue, context: &mut Context, net_enable: &mut Option<thread::JoinHandle<()>>) {
     if id == TaskId::Suspend {
         tasks.retain(|task| task.id != TaskId::Suspend);
         if context.settings.frontlight {
@@ -151,16 +176,7 @@ fn resume(id: TaskId, tasks: &mut Vec<Task>, view: &mut dyn View, hub: &Sender<E
             context.frontlight.set_warmth(levels.warmth);
             context.frontlight.set_intensity(levels.intensity);
         }
-        if context.settings.wifi {
-            Command::new("scripts/wifi-enable.sh")
-                    .status()
-                    .ok();
-        }
-        if context.settings.bluetooth {
-            Command::new("scripts/bluetooth-enable.sh")
-                    .status()
-                    .ok();
-        }
+        spawn_net_enable(context.settings.wifi, context.settings.bluetooth, net_enable);
     }
     if id == TaskId::Suspend || id == TaskId::PrepareSuspend {
         tasks.retain(|task| task.id != TaskId::PrepareSuspend);
@@ -186,10 +202,11 @@ fn power_off(view: &mut dyn View, history: &mut Vec<HistoryItem>, updating: &mut
     context.fb.update(interm.rect(), UpdateMode::Full).ok();
 }
 
-fn set_wifi(enable: bool, context: &mut Context) {
+fn set_wifi(enable: bool, context: &mut Context, net_enable: &mut Option<thread::JoinHandle<()>>) {
     if context.settings.wifi == enable {
         return;
     }
+    join_net_enable(net_enable);
     context.settings.wifi = enable;
     if context.settings.wifi {
         Command::new("scripts/wifi-enable.sh")
@@ -203,10 +220,11 @@ fn set_wifi(enable: bool, context: &mut Context) {
     }
 }
 
-fn set_bluetooth(enable: bool, context: &mut Context) {
+fn set_bluetooth(enable: bool, context: &mut Context, net_enable: &mut Option<thread::JoinHandle<()>>) {
     if context.settings.bluetooth == enable {
         return;
     }
+    join_net_enable(net_enable);
     context.settings.bluetooth = enable;
     if context.settings.bluetooth {
         Command::new("scripts/bluetooth-enable.sh")
@@ -342,6 +360,7 @@ pub fn run() -> Result<(), Error> {
     }
 
     let mut tasks: Vec<Task> = Vec::new();
+    let mut net_enable: Option<thread::JoinHandle<()>> = None;
     let mut history: Vec<HistoryItem> = Vec::new();
     let mut rq = RenderQueue::new();
     let mut view: Box<dyn View> = Box::new(Home::new(context.fb.rect(), &tx,
@@ -371,9 +390,9 @@ pub fn run() -> Result<(), Error> {
                         }
 
                         if tasks.iter().any(|task| task.id == TaskId::PrepareSuspend) {
-                            resume(TaskId::PrepareSuspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context);
+                            resume(TaskId::PrepareSuspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context, &mut net_enable);
                         } else if tasks.iter().any(|task| task.id == TaskId::Suspend) {
-                            resume(TaskId::Suspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context);
+                            resume(TaskId::Suspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context, &mut net_enable);
                         } else {
                             view.handle_event(&Event::Suspend, &tx, &mut bus, &mut rq, &mut context);
                             let interm = Intermission::new(context.fb.rect(), IntermKind::Suspend, &context);
@@ -418,9 +437,9 @@ pub fn run() -> Result<(), Error> {
                         }
 
                         if tasks.iter().any(|task| task.id == TaskId::PrepareSuspend) {
-                            resume(TaskId::PrepareSuspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context);
+                            resume(TaskId::PrepareSuspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context, &mut net_enable);
                         } else if tasks.iter().any(|task| task.id == TaskId::Suspend) {
-                            resume(TaskId::Suspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context);
+                            resume(TaskId::Suspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context, &mut net_enable);
                         }
                     },
                     DeviceEvent::NetUp => {
@@ -466,9 +485,9 @@ pub fn run() -> Result<(), Error> {
                             },
                             PowerSource::Host => {
                                 if tasks.iter().any(|task| task.id == TaskId::PrepareSuspend) {
-                                    resume(TaskId::PrepareSuspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context);
+                                    resume(TaskId::PrepareSuspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context, &mut net_enable);
                                 } else if tasks.iter().any(|task| task.id == TaskId::Suspend) {
-                                    resume(TaskId::Suspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context);
+                                    resume(TaskId::Suspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context, &mut net_enable);
                                 }
 
                                 if context.settings.auto_share {
@@ -504,11 +523,7 @@ pub fn run() -> Result<(), Error> {
                                                             .map_err(|e| eprintln!("Can't load settings: {:#}.", e)) {
                                 context.settings = settings;
                             }
-                            if context.settings.wifi {
-                                Command::new("scripts/wifi-enable.sh")
-                                        .status()
-                                        .ok();
-                            }
+                            spawn_net_enable(context.settings.wifi, false, &mut net_enable);
                             if context.settings.frontlight {
                                 let levels = context.settings.frontlight_levels;
                                 context.frontlight.set_warmth(levels.warmth);
@@ -533,7 +548,7 @@ pub fn run() -> Result<(), Error> {
                                           BATTERY_REFRESH_INTERVAL, &tx, &mut tasks);
                             if tasks.iter().any(|task| task.id == TaskId::Suspend) {
                                 if !context.covered {
-                                    resume(TaskId::Suspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context);
+                                    resume(TaskId::Suspend, &mut tasks, view.as_mut(), &tx, &mut rq, &mut context, &mut net_enable);
                                 }
                             } else {
                                 tx.send(Event::BatteryTick).ok();
@@ -600,6 +615,7 @@ pub fn run() -> Result<(), Error> {
                     context.frontlight.set_intensity(0.0);
                     context.frontlight.set_warmth(0.0);
                 }
+                join_net_enable(&mut net_enable);
                 if context.settings.wifi {
                     Command::new("scripts/wifi-disable.sh")
                             .status()
@@ -950,16 +966,16 @@ pub fn run() -> Result<(), Error> {
                 }
             },
             Event::SetWifi(enable) => {
-                set_wifi(enable, &mut context);
+                set_wifi(enable, &mut context, &mut net_enable);
             },
             Event::Select(EntryId::ToggleWifi) => {
-                set_wifi(!context.settings.wifi, &mut context);
+                set_wifi(!context.settings.wifi, &mut context, &mut net_enable);
             },
             Event::SetBluetooth(enable) => {
-                set_bluetooth(enable, &mut context);
+                set_bluetooth(enable, &mut context, &mut net_enable);
             },
             Event::Select(EntryId::ToggleBluetooth) => {
-                set_bluetooth(!context.settings.bluetooth, &mut context);
+                set_bluetooth(!context.settings.bluetooth, &mut context, &mut net_enable);
             },
             Event::Select(EntryId::TakeScreenshot) => {
                 let name = Local::now().format("screenshot-%Y%m%d_%H%M%S.png");
@@ -1017,6 +1033,8 @@ pub fn run() -> Result<(), Error> {
             tx.send(ce).ok();
         }
     }
+
+    join_net_enable(&mut net_enable);
 
     if exit_status == ExitStatus::Quit && !CURRENT_DEVICE.has_gyroscope() && context.display.rotation != initial_rotation {
         context.fb.set_rotation(initial_rotation).ok();
