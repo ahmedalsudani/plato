@@ -133,6 +133,10 @@ To select text, tap and hold the first or last word of the selection. Wait for t
 
 Tap and hold the next/previous page icon to go the next/previous chapter.
 
+## Tool bar
+
+For reflowable documents rendered with the built-in engine, the tool bar includes font size and font weight sliders. The font weight slider goes from 300 to 700 in steps of 50, and only affects variable fonts with a weight axis (e.g. the bundled *Literata*, *Bitter* and *Source Serif 4*). The weight of bold text is the selected weight plus 300, clamped to the font's maximum.
+
 ## Top bar
 
 Tap the title label to bring up the book menu.

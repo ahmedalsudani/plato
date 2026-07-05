@@ -396,6 +396,7 @@ pub enum ViewId {
     Frontlight,
     Dictionary,
     FontSizeMenu,
+    FontWeightMenu,
     TextAlignMenu,
     FontFamilyMenu,
     MarginWidthMenu,
@@ -442,6 +443,7 @@ pub enum ViewId {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum SliderId {
     FontSize,
+    FontWeight,
     LightIntensity,
     LightWarmth,
     ContrastExponent,
@@ -454,6 +456,7 @@ impl SliderId {
             SliderId::LightIntensity => "Intensity".to_string(),
             SliderId::LightWarmth => "Warmth".to_string(),
             SliderId::FontSize => "Font Size".to_string(),
+            SliderId::FontWeight => "Font Weight".to_string(),
             SliderId::ContrastExponent => "Contrast Exponent".to_string(),
             SliderId::ContrastGray => "Contrast Gray".to_string(),
         }
@@ -554,6 +557,7 @@ pub enum EntryId {
     SetButtonScheme(ButtonScheme),
     SetFontFamily(String),
     SetFontSize(i32),
+    SetFontWeight(i32),
     SetTextAlign(TextAlign),
     SetMarginWidth(i32),
     SetLineHeight(i32),

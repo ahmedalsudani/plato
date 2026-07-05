@@ -45,6 +45,7 @@ use crate::view::menu_entry::MenuEntry;
 use crate::view::notification::Notification;
 use crate::settings::{guess_frontlight, FinishedAction, SouthEastCornerAction, BottomRightGestureAction, SouthStripAction, WestStripAction, EastStripAction};
 use crate::settings::{DEFAULT_FONT_FAMILY, DEFAULT_TEXT_ALIGN, DEFAULT_LINE_HEIGHT, DEFAULT_MARGIN_WIDTH};
+use crate::settings::{BUNDLED_FONT_FAMILIES, DEFAULT_FONT_WEIGHT, MIN_FONT_WEIGHT, MAX_FONT_WEIGHT, FONT_WEIGHT_STEP};
 use crate::settings::{HYPHEN_PENALTY, STRETCH_TOLERANCE};
 use crate::frontlight::LightLevels;
 use crate::gesture::GestureEvent;
@@ -263,6 +264,13 @@ impl Reader {
 
             if font_family != DEFAULT_FONT_FAMILY {
                 doc.set_font_family(font_family, &settings.reader.font_path);
+            }
+
+            let font_weight = info.reader.as_ref().and_then(|r| r.font_weight)
+                                  .unwrap_or(settings.reader.font_weight);
+
+            if (font_weight - DEFAULT_FONT_WEIGHT).abs() > f32::EPSILON {
+                doc.set_font_weight(font_weight);
             }
 
             let line_height = info.reader.as_ref().and_then(|r| r.line_height)
@@ -966,6 +974,10 @@ impl Reader {
                                     .and_then(|r| r.font_size)
                                     .unwrap_or(settings.reader.font_size);
                 tool_bar.update_font_size_slider(font_size, rq);
+                let font_weight = self.info.reader.as_ref()
+                                      .and_then(|r| r.font_weight)
+                                      .unwrap_or(settings.reader.font_weight);
+                tool_bar.update_font_weight_slider(font_weight, rq);
                 let text_align = self.info.reader.as_ref()
                                     .and_then(|r| r.text_align)
                                     .unwrap_or(settings.reader.text_align);
@@ -1353,7 +1365,7 @@ impl Reader {
 
             let dpi = CURRENT_DEVICE.dpi;
             let big_height = scale_by_dpi(BIG_BAR_HEIGHT, dpi) as i32;
-            let tb_height = 2 * big_height;
+            let tb_height = (if self.reflowable { 3 } else { 2 }) * big_height;
 
             let sp_rect = *self.child(2).rect() - pt!(0, tb_height as i32);
 
@@ -1563,7 +1575,7 @@ impl Reader {
                     index += 1;
                 }
             } else {
-                let tb_height = 2 * big_height;
+                let tb_height = (if self.reflowable { 3 } else { 2 }) * big_height;
                 let separator = Filler::new(rect![self.rect.min.x,
                                                   self.rect.max.y - (small_height + tb_height) as i32 - small_thickness,
                                                   self.rect.max.x,
@@ -1895,7 +1907,9 @@ impl Reader {
             let current_family = self.info.reader.as_ref()
                                      .and_then(|r| r.font_family.clone())
                                      .unwrap_or_else(|| context.settings.reader.font_family.clone());
-            families.insert(DEFAULT_FONT_FAMILY.to_string());
+            for family_name in BUNDLED_FONT_FAMILIES {
+                families.insert(family_name.to_string());
+            }
             let entries = families.iter().map(|f| EntryKind::RadioButton(f.clone(),
                                                                          EntryId::SetFontFamily(f.clone()),
                                                                          *f == current_family)).collect();
@@ -1935,6 +1949,33 @@ impl Reader {
             let font_size_menu = Menu::new(rect, ViewId::FontSizeMenu, MenuKind::Contextual, entries, context);
             rq.add(RenderData::new(font_size_menu.id(), *font_size_menu.rect(), UpdateMode::Gui));
             self.children.push(Box::new(font_size_menu) as Box<dyn View>);
+        }
+    }
+
+    fn toggle_font_weight_menu(&mut self, rect: Rectangle, enable: Option<bool>, rq: &mut RenderQueue, context: &mut Context) {
+        if let Some(index) = locate_by_id(self, ViewId::FontWeightMenu) {
+            if let Some(true) = enable {
+                return;
+            }
+
+            rq.add(RenderData::expose(*self.child(index).rect(), UpdateMode::Gui));
+            self.children.remove(index);
+        } else {
+            if let Some(false) = enable {
+                return;
+            }
+
+            let font_weight = self.info.reader.as_ref().and_then(|r| r.font_weight)
+                                  .unwrap_or(context.settings.reader.font_weight);
+            let entries = (MIN_FONT_WEIGHT as i32 ..= MAX_FONT_WEIGHT as i32)
+                          .step_by(FONT_WEIGHT_STEP as usize).map(|v| {
+                EntryKind::RadioButton(format!("{}", v),
+                                       EntryId::SetFontWeight(v),
+                                       (font_weight - v as f32).abs() < f32::EPSILON)
+            }).collect();
+            let font_weight_menu = Menu::new(rect, ViewId::FontWeightMenu, MenuKind::Contextual, entries, context);
+            rq.add(RenderData::new(font_weight_menu.id(), *font_weight_menu.rect(), UpdateMode::Gui));
+            self.children.push(Box::new(font_weight_menu) as Box<dyn View>);
         }
     }
 
@@ -2197,6 +2238,37 @@ impl Reader {
                 let ratio = doc.pages_count() / self.pages_count;
                 self.pages_count = doc.pages_count();
                 self.current_page = (ratio * self.current_page).min(self.pages_count - 1);
+            }
+        }
+
+        self.cache.clear();
+        self.text.clear();
+        self.update(None, hub, rq, context);
+        self.update_tool_bar(rq, context);
+        self.update_bottom_bar(rq);
+    }
+
+    fn set_font_weight(&mut self, font_weight: f32, hub: &Hub, rq: &mut RenderQueue, context: &mut Context) {
+        if Arc::strong_count(&self.doc) > 1 {
+            return;
+        }
+
+        if let Some(ref mut r) = self.info.reader {
+            r.font_weight = Some(font_weight);
+        }
+
+        {
+            let mut doc = self.doc.lock().unwrap();
+            doc.set_font_weight(font_weight);
+
+            if self.synthetic {
+                let current_page = self.current_page.min(doc.pages_count() - 1);
+                if let Some(location) =  doc.resolve_location(Location::Exact(current_page)) {
+                    self.current_page = location;
+                }
+            } else {
+                self.pages_count = doc.pages_count();
+                self.current_page = self.current_page.min(self.pages_count - 1);
             }
         }
 
@@ -3504,6 +3576,10 @@ impl View for Reader {
                 self.set_font_size(font_size, hub, rq, context);
                 true
             },
+            Event::Slider(SliderId::FontWeight, font_weight, FingerStatus::Up) => {
+                self.set_font_weight(font_weight, hub, rq, context);
+                true
+            },
             Event::Slider(SliderId::ContrastExponent, exponent, FingerStatus::Up) => {
                 self.set_contrast_exponent(exponent, hub, rq, context);
                 true
@@ -3542,6 +3618,10 @@ impl View for Reader {
             },
             Event::ToggleNear(ViewId::FontSizeMenu, rect) => {
                 self.toggle_font_size_menu(rect, None, rq, context);
+                true
+            },
+            Event::ToggleNear(ViewId::FontWeightMenu, rect) => {
+                self.toggle_font_weight_menu(rect, None, rq, context);
                 true
             },
             Event::ToggleNear(ViewId::TextAlignMenu, rect) => {
@@ -3872,6 +3952,10 @@ impl View for Reader {
                 self.set_font_size(font_size, hub, rq, context);
                 true
             },
+            Event::Select(EntryId::SetFontWeight(v)) => {
+                self.set_font_weight(v as f32, hub, rq, context);
+                true
+            },
             Event::Select(EntryId::SetMarginWidth(width)) => {
                 self.set_margin_width(width, hub, rq, context);
                 true
@@ -4147,7 +4231,7 @@ impl View for Reader {
 
                 while index > 2 {
                     let bar_height = if self.children[index].is::<ToolBar>() {
-                        2 * big_height
+                        (if self.reflowable { 3 } else { 2 }) * big_height
                     } else if self.children[index].is::<Keyboard>() {
                         3 * big_height
                     } else {

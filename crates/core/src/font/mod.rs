@@ -501,11 +501,19 @@ impl FontFamily {
             styles.get("Regular")
                   .or_else(|| styles.get("Roman"))
                   .or_else(|| styles.get("Book"))
+                  // Variable fonts might name their default instance after
+                  // their lightest weight (e.g. Bitter's is named *Thin*).
+                  .or_else(|| styles.iter()
+                                    .find(|(name, _)| !name.contains("Italic"))
+                                    .map(|(_, path)| path))
                   .ok_or_else(|| format_err!("can't find regular style"))?
         };
         let italic_path = styles.get("Italic")
                                 .or_else(|| styles.get("Book Italic"))
                                 .or_else(|| styles.get("Regular Italic"))
+                                .or_else(|| styles.iter()
+                                                  .find(|(name, _)| name.ends_with("Italic"))
+                                                  .map(|(_, path)| path))
                                 .unwrap_or(regular_path);
         let bold_path = styles.get("Bold")
                               .or_else(|| styles.get("Semibold"))

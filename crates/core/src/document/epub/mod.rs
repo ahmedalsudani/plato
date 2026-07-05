@@ -887,6 +887,11 @@ impl Document for EpubDocument {
         self.cache.clear();
     }
 
+    fn set_font_weight(&mut self, weight: f32) {
+        self.engine.set_font_weight(weight);
+        self.cache.clear();
+    }
+
     fn set_margin_width(&mut self, width: i32) {
         self.engine.set_margin_width(width);
         self.cache.clear();

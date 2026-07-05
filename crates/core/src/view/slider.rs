@@ -19,6 +19,7 @@ pub struct Slider {
     value: f32,
     min_value: f32,
     max_value: f32,
+    step: Option<f32>,
     active: bool,
     last_x: i32,
 }
@@ -33,8 +34,16 @@ impl Slider {
             value,
             min_value,
             max_value,
+            step: None,
             active: false,
             last_x: -1,
+        }
+    }
+
+    pub fn with_step(rect: Rectangle, slider_id: SliderId, value: f32, min_value: f32, max_value: f32, step: f32) -> Slider {
+        Slider {
+            step: Some(step),
+            .. Slider::new(rect, slider_id, value, min_value, max_value)
         }
     }
 
@@ -48,6 +57,9 @@ impl Slider {
                         (self.rect.width() as i32 - button_diameter) as f32)
                        .clamp(0.0, 1.0);
         self.value = self.min_value + progress * (self.max_value - self.min_value);
+        if let Some(step) = self.step {
+            self.value = self.min_value + ((self.value - self.min_value) / step).round() * step;
+        }
     }
 
     pub fn update(&mut self, value: f32, rq: &mut RenderQueue) {
@@ -132,7 +144,8 @@ impl View for Slider {
                                               &fill_color);
 
         let font = font_from_style(fonts, &SLIDER_VALUE, dpi);
-        let plan = font.plan(&format!("{:.1}", self.value), None, None);
+        let precision = if self.step.map_or(false, |step| step.fract() == 0.0) { 0 } else { 1 };
+        let plan = font.plan(&format!("{:.1$}", self.value, precision), None, None);
         let x_height = font.x_heights.1 as i32;
 
         let x_drift = if self.value > (self.min_value + self.max_value) / 2.0 {

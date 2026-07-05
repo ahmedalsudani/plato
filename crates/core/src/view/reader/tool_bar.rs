@@ -1,6 +1,6 @@
 use crate::device::CURRENT_DEVICE;
 use crate::framebuffer::{Framebuffer, UpdateMode};
-use crate::settings::ReaderSettings;
+use crate::settings::{ReaderSettings, MIN_FONT_WEIGHT, MAX_FONT_WEIGHT, FONT_WEIGHT_STEP};
 use crate::metadata::{ReaderInfo, TextAlign};
 use crate::metadata::{DEFAULT_CONTRAST_EXPONENT, DEFAULT_CONTRAST_GRAY};
 use crate::view::{View, Event, Hub, Bus, Id, ID_FEEDER, RenderQueue, RenderData, SliderId, ViewId, THICKNESS_MEDIUM};
@@ -30,7 +30,8 @@ impl ToolBar {
         let mut children = Vec::new();
         let dpi = CURRENT_DEVICE.dpi;
         let thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as i32;
-        let side = (rect.height() as i32 + thickness) / 2 - thickness;
+        let rows = if reflowable { 3 } else { 2 };
+        let side = (rect.height() as i32 + thickness) / rows - thickness;
 
         if reflowable {
             let mut remaining_width = rect.width() as i32 - 3 * side;
@@ -71,17 +72,17 @@ impl ToolBar {
                                                     format!("{:.1} em", line_height));
             children.push(Box::new(line_height_icon) as Box<dyn View>);
 
-            // Separator.
+            // First separator.
             let separator = Filler::new(rect![rect.min.x, rect.min.y + side,
-                                              rect.max.x, rect.max.y - side],
+                                              rect.max.x, rect.min.y + side + thickness],
                                         SEPARATOR_NORMAL);
             children.push(Box::new(separator) as Box<dyn View>);
 
-            // Start of second row.
+            // Second row.
             let text_align = reader_info.and_then(|r| r.text_align)
                                         .unwrap_or(reader_settings.text_align);
-            let text_align_rect = rect![rect.min.x, rect.max.y - side,
-                                       rect.min.x + side, rect.max.y];
+            let text_align_rect = rect![rect.min.x, rect.min.y + side + thickness,
+                                        rect.min.x + side, rect.max.y - side - thickness];
             let text_align_icon = Icon::new(text_align.icon_name(),
                                            text_align_rect,
                                            Event::ToggleNear(ViewId::TextAlignMenu, text_align_rect));
@@ -89,19 +90,44 @@ impl ToolBar {
 
             let font_size = reader_info.and_then(|r| r.font_size)
                                        .unwrap_or(reader_settings.font_size);
-            let font_size_rect = rect![rect.min.x + side, rect.max.y - side,
-                                       rect.min.x + 2 * side, rect.max.y];
+            let font_size_rect = rect![rect.min.x + side, rect.min.y + side + thickness,
+                                       rect.min.x + 2 * side, rect.max.y - side - thickness];
             let font_size_icon = Icon::new("font_size",
                                            font_size_rect,
                                            Event::ToggleNear(ViewId::FontSizeMenu, font_size_rect));
             children.push(Box::new(font_size_icon) as Box<dyn View>);
 
-            let slider = Slider::new(rect![rect.min.x + 2 * side, rect.max.y - side,
-                                           rect.max.x - 2 * side, rect.max.y],
+            let slider = Slider::new(rect![rect.min.x + 2 * side, rect.min.y + side + thickness,
+                                           rect.max.x, rect.max.y - side - thickness],
                                      SliderId::FontSize,
                                      font_size,
                                      reader_settings.min_font_size,
                                      reader_settings.max_font_size);
+            children.push(Box::new(slider) as Box<dyn View>);
+
+            // Second separator.
+            let separator = Filler::new(rect![rect.min.x, rect.max.y - side - thickness,
+                                              rect.max.x, rect.max.y - side],
+                                        SEPARATOR_NORMAL);
+            children.push(Box::new(separator) as Box<dyn View>);
+
+            // Start of third row.
+            let font_weight_rect = rect![rect.min.x, rect.max.y - side,
+                                         rect.min.x + side, rect.max.y];
+            let font_weight_icon = Icon::new("font_weight",
+                                             font_weight_rect,
+                                             Event::ToggleNear(ViewId::FontWeightMenu, font_weight_rect));
+            children.push(Box::new(font_weight_icon) as Box<dyn View>);
+
+            let font_weight = reader_info.and_then(|r| r.font_weight)
+                                         .unwrap_or(reader_settings.font_weight);
+            let slider = Slider::with_step(rect![rect.min.x + side, rect.max.y - side,
+                                                 rect.max.x - 2 * side, rect.max.y],
+                                           SliderId::FontWeight,
+                                           font_weight,
+                                           MIN_FONT_WEIGHT,
+                                           MAX_FONT_WEIGHT,
+                                           FONT_WEIGHT_STEP);
             children.push(Box::new(slider) as Box<dyn View>);
         } else {
             let remaining_width = rect.width() as i32 - 2 * side;
@@ -250,6 +276,11 @@ impl ToolBar {
         slider.update(font_size, rq);
     }
 
+    pub fn update_font_weight_slider(&mut self, font_weight: f32, rq: &mut RenderQueue) {
+        let slider = self.children[9].as_mut().downcast_mut::<Slider>().unwrap();
+        slider.update(font_weight, rq);
+    }
+
     pub fn update_contrast_exponent_slider(&mut self, exponent: f32, rq: &mut RenderQueue) {
         let slider = self.children[1].as_mut().downcast_mut::<Slider>().unwrap();
         slider.update(exponent, rq);
@@ -278,7 +309,8 @@ impl View for ToolBar {
     fn resize(&mut self, rect: Rectangle, hub: &Hub, rq: &mut RenderQueue, context: &mut Context) {
         let dpi = CURRENT_DEVICE.dpi;
         let thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as i32;
-        let side = (rect.height() as i32 + thickness) / 2 - thickness;
+        let rows = if self.reflowable { 3 } else { 2 };
+        let side = (rect.height() as i32 + thickness) / rows - thickness;
 
         let mut index = 0;
 
@@ -309,24 +341,41 @@ impl View for ToolBar {
                                         hub, rq, context);
             index += 1;
 
-            // Separator.
+            // First separator.
             self.children[index].resize(rect![rect.min.x, rect.min.y + side,
+                                              rect.max.x, rect.min.y + side + thickness],
+                                        hub, rq, context);
+            index += 1;
+
+            // Second row.
+            let text_align_rect = rect![rect.min.x, rect.min.y + side + thickness,
+                                        rect.min.x + side, rect.max.y - side - thickness];
+            self.children[index].resize(text_align_rect, hub, rq, context);
+            index += 1;
+
+            let font_size_rect = rect![rect.min.x + side, rect.min.y + side + thickness,
+                                       rect.min.x + 2 * side, rect.max.y - side - thickness];
+            self.children[index].resize(font_size_rect, hub, rq, context);
+            index += 1;
+
+            self.children[index].resize(rect![rect.min.x + 2 * side, rect.min.y + side + thickness,
+                                              rect.max.x, rect.max.y - side - thickness],
+                                        hub, rq, context);
+            index += 1;
+
+            // Second separator.
+            self.children[index].resize(rect![rect.min.x, rect.max.y - side - thickness,
                                               rect.max.x, rect.max.y - side],
                                         hub, rq, context);
             index += 1;
 
-            // Start of second row.
-            let text_align_rect = rect![rect.min.x, rect.max.y - side,
-                                        rect.min.x + side, rect.max.y];
-            self.children[index].resize(text_align_rect, hub, rq, context);
+            // Start of third row.
+            self.children[index].resize(rect![rect.min.x, rect.max.y - side,
+                                              rect.min.x + side, rect.max.y],
+                                        hub, rq, context);
             index += 1;
 
-            let font_size_rect = rect![rect.min.x + side, rect.max.y - side,
-                                       rect.min.x + 2 * side, rect.max.y];
-            self.children[index].resize(font_size_rect, hub, rq, context);
-            index += 1;
-
-            self.children[index].resize(rect![rect.min.x + 2 * side, rect.max.y - side,
+            self.children[index].resize(rect![rect.min.x + side, rect.max.y - side,
                                               rect.max.x - 2 * side, rect.max.y],
                                         hub, rq, context);
         } else {

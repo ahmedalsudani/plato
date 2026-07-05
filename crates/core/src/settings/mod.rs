@@ -28,7 +28,14 @@ pub const DEFAULT_MARGIN_WIDTH: i32 = 8;
 // Default line height in ems.
 pub const DEFAULT_LINE_HEIGHT: f32 = 1.2;
 // Default font family name.
-pub const DEFAULT_FONT_FAMILY: &str = "Libertinus Serif";
+pub const DEFAULT_FONT_FAMILY: &str = "Literata";
+// Default font weight, on the CSS scale.
+pub const DEFAULT_FONT_WEIGHT: f32 = 400.0;
+pub const MIN_FONT_WEIGHT: f32 = 300.0;
+pub const MAX_FONT_WEIGHT: f32 = 700.0;
+pub const FONT_WEIGHT_STEP: f32 = 50.0;
+// Families provided by the fonts directory bundled with the application.
+pub const BUNDLED_FONT_FAMILIES: [&str; 4] = ["Bitter", "Libertinus Serif", "Literata", "Source Serif 4"];
 // Default text alignment.
 pub const DEFAULT_TEXT_ALIGN: TextAlign = TextAlign::Left;
 pub const HYPHEN_PENALTY: i32 = 50;
@@ -341,6 +348,7 @@ pub struct ReaderSettings {
     pub font_size: f32,
     pub min_font_size: f32,
     pub max_font_size: f32,
+    pub font_weight: f32,
     pub text_align: TextAlign,
     pub margin_width: i32,
     pub min_margin_width: i32,
@@ -456,6 +464,7 @@ impl Default for ReaderSettings {
             font_size: DEFAULT_FONT_SIZE,
             min_font_size: DEFAULT_FONT_SIZE / 2.0,
             max_font_size: 3.0 * DEFAULT_FONT_SIZE / 2.0,
+            font_weight: DEFAULT_FONT_WEIGHT,
             text_align: DEFAULT_TEXT_ALIGN,
             margin_width: DEFAULT_MARGIN_WIDTH,
             min_margin_width: DEFAULT_MARGIN_WIDTH.saturating_sub(8),

@@ -16,6 +16,7 @@ use crate::unit::{mm_to_px, pt_to_px};
 use crate::geom::{Point, Vec2, Rectangle, Edge};
 use crate::settings::{HYPHEN_PENALTY, STRETCH_TOLERANCE};
 use crate::settings::{DEFAULT_FONT_SIZE, DEFAULT_MARGIN_WIDTH, DEFAULT_TEXT_ALIGN, DEFAULT_LINE_HEIGHT};
+use crate::settings::DEFAULT_FONT_WEIGHT;
 use super::parse::{parse_display, parse_edge, parse_float, parse_text_align, parse_text_indent};
 use super::parse::{parse_width, parse_height, parse_inline_material, parse_font_kind, parse_font_style};
 use super::parse::{parse_font_weight, parse_font_size, parse_font_features, parse_font_variant};
@@ -54,6 +55,8 @@ pub struct Engine {
     pub margin: Edge,
     // Font size in points.
     pub font_size: f32,
+    // Font weight of the serif family, on the CSS scale.
+    font_weight: f32,
     // Text alignment.
     pub text_align: TextAlign,
     // Line height in ems.
@@ -75,6 +78,7 @@ impl Engine {
             stretch_tolerance: STRETCH_TOLERANCE,
             margin,
             font_size: DEFAULT_FONT_SIZE,
+            font_weight: DEFAULT_FONT_WEIGHT,
             text_align: DEFAULT_TEXT_ALIGN,
             line_height,
             dims: (DEFAULT_WIDTH, DEFAULT_HEIGHT),
@@ -117,11 +121,21 @@ impl Engine {
     }
 
     pub fn set_font_family(&mut self, family_name: &str, search_path: &str) {
-        if let Ok(serif_family) = FontFamily::from_name(family_name, search_path) {
+        if let Ok(mut serif_family) = FontFamily::from_name(family_name, search_path)
+                                                 .or_else(|_| FontFamily::from_name(family_name, "fonts")) {
+            apply_font_weight(&mut serif_family, self.font_weight);
             self.load_fonts();
             if let Some(fonts) = self.fonts.as_mut() {
                 fonts.serif = serif_family;
             }
+        }
+    }
+
+    pub fn set_font_weight(&mut self, weight: f32) {
+        self.font_weight = weight;
+        self.load_fonts();
+        if let Some(fonts) = self.fonts.as_mut() {
+            apply_font_weight(&mut fonts.serif, weight);
         }
     }
 
@@ -1734,14 +1748,26 @@ fn format_list_prefix(kind: ListStyleType, index: usize) -> Option<String> {
     }
 }
 
+// Set the weight of the regular and italic faces to `weight`, and the weight
+// of the bold and bold italic faces to `weight + 300` (`set_variations` clamps
+// to the axis' bounds). Has no effect on non-variable fonts.
+fn apply_font_weight(family: &mut FontFamily, weight: f32) {
+    let spec = format!("wght={}", weight);
+    family.regular.set_variations(&[&spec]);
+    family.italic.set_variations(&[&spec]);
+    let bold_spec = format!("wght={}", weight + 300.0);
+    family.bold.set_variations(&[&bold_spec]);
+    family.bold_italic.set_variations(&[&bold_spec]);
+}
+
 fn default_fonts() -> Result<Fonts, Error> {
     let opener = FontOpener::new()?;
     let mut fonts = Fonts {
         serif: FontFamily {
-            regular: opener.open("fonts/LibertinusSerif-Regular.otf")?,
-            italic: opener.open("fonts/LibertinusSerif-Italic.otf")?,
-            bold: opener.open("fonts/LibertinusSerif-Bold.otf")?,
-            bold_italic: opener.open("fonts/LibertinusSerif-BoldItalic.otf")?,
+            regular: opener.open("fonts/Literata[opsz,wght].ttf")?,
+            italic: opener.open("fonts/Literata-Italic[opsz,wght].ttf")?,
+            bold: opener.open("fonts/Literata[opsz,wght].ttf")?,
+            bold_italic: opener.open("fonts/Literata-Italic[opsz,wght].ttf")?,
         },
         sans_serif: FontFamily {
             regular: opener.open("fonts/NotoSans-Regular.ttf")?,
@@ -1758,6 +1784,8 @@ fn default_fonts() -> Result<Fonts, Error> {
         cursive: opener.open("fonts/Parisienne-Regular.ttf")?,
         fantasy: opener.open("fonts/Delius-Regular.ttf")?,
     };
+    fonts.serif.bold.set_variations(&["wght=700"]);
+    fonts.serif.bold_italic.set_variations(&["wght=700"]);
     fonts.monospace.bold.set_variations(&["wght=600"]);
     fonts.monospace.bold_italic.set_variations(&["wght=600"]);
     Ok(fonts)

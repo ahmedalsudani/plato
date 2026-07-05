@@ -297,6 +297,9 @@ impl Document for PdfDocument {
     fn set_font_family(&mut self, _family_name: &str, _search_path: &str) {
     }
 
+    fn set_font_weight(&mut self, _weight: f32) {
+    }
+
     fn set_margin_width(&mut self, _width: i32) {
     }
 
