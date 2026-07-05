@@ -43,6 +43,7 @@ use crate::view::keyboard::Keyboard;
 use crate::view::menu::{Menu, MenuKind};
 use crate::view::menu_entry::MenuEntry;
 use crate::view::notification::Notification;
+use crate::view::dialog::Dialog;
 use crate::settings::{guess_frontlight, FinishedAction, SouthEastCornerAction, BottomRightGestureAction, NorthStripAction, SouthStripAction, WestStripAction, EastStripAction};
 use crate::settings::{DEFAULT_FONT_FAMILY, DEFAULT_TEXT_ALIGN, DEFAULT_LINE_HEIGHT, DEFAULT_MARGIN_WIDTH};
 use crate::settings::{BUNDLED_FONT_FAMILIES, DEFAULT_FONT_WEIGHT, MIN_FONT_WEIGHT, MAX_FONT_WEIGHT, FONT_WEIGHT_STEP};
@@ -3219,18 +3220,13 @@ impl View for Reader {
                             hub.send(Event::GoTo(location)).ok();
                         } else {
                             if link.text.starts_with("https:") || link.text.starts_with("http:") {
-                                if let Some(path) = context.settings.external_urls_queue.as_ref() {
-                                    if let Ok(mut file) = OpenOptions::new().create(true)
-                                                                            .append(true)
-                                                                            .open(path) {
-                                        if let Err(e) = writeln!(file, "{}", link.text) {
-                                            eprintln!("Couldn't write to {}: {:#}.", path.display(), e);
-                                        } else {
-                                            let message = format!("Queued {}.", link.text);
-                                            let notif = Notification::new(message, hub, rq, context);
-                                            self.children.push(Box::new(notif) as Box<dyn View>);
-                                        }
-                                    }
+                                if context.settings.external_urls_queue.is_some() {
+                                    let dialog = Dialog::new(ViewId::ExternalUrlDialog,
+                                                             Some(Event::QueueExternalUrl(link.text.clone())),
+                                                             format!("Queue {} for download?", link.text),
+                                                             context);
+                                    rq.add(RenderData::new(dialog.id(), *dialog.rect(), UpdateMode::Gui));
+                                    self.children.push(Box::new(dialog) as Box<dyn View>);
                                 }
                             } else {
                                 eprintln!("Can't resolve URI: {}.", link.text);
@@ -3537,6 +3533,22 @@ impl View for Reader {
             },
             Event::GoTo(location) | Event::Select(EntryId::GoTo(location)) => {
                 self.go_to_page(location, true, hub, rq, context);
+                true
+            },
+            Event::QueueExternalUrl(ref url) => {
+                if let Some(path) = context.settings.external_urls_queue.as_ref() {
+                    if let Ok(mut file) = OpenOptions::new().create(true)
+                                                            .append(true)
+                                                            .open(path) {
+                        if let Err(e) = writeln!(file, "{}", url) {
+                            eprintln!("Couldn't write to {}: {:#}.", path.display(), e);
+                        } else {
+                            let message = format!("Queued {}.", url);
+                            let notif = Notification::new(message, hub, rq, context);
+                            self.children.push(Box::new(notif) as Box<dyn View>);
+                        }
+                    }
+                }
                 true
             },
             Event::GoToLocation(ref location) => {
