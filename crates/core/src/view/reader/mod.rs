@@ -43,7 +43,7 @@ use crate::view::keyboard::Keyboard;
 use crate::view::menu::{Menu, MenuKind};
 use crate::view::menu_entry::MenuEntry;
 use crate::view::notification::Notification;
-use crate::settings::{guess_frontlight, FinishedAction, SouthEastCornerAction, BottomRightGestureAction, SouthStripAction, WestStripAction, EastStripAction};
+use crate::settings::{guess_frontlight, FinishedAction, SouthEastCornerAction, BottomRightGestureAction, NorthStripAction, SouthStripAction, WestStripAction, EastStripAction};
 use crate::settings::{DEFAULT_FONT_FAMILY, DEFAULT_TEXT_ALIGN, DEFAULT_LINE_HEIGHT, DEFAULT_MARGIN_WIDTH};
 use crate::settings::{BUNDLED_FONT_FAMILIES, DEFAULT_FONT_WEIGHT, MIN_FONT_WEIGHT, MAX_FONT_WEIGHT, FONT_WEIGHT_STEP};
 use crate::settings::{HYPHEN_PENALTY, STRETCH_TOLERANCE};
@@ -2776,13 +2776,7 @@ impl View for Reader {
                 }
 
                 match self.view_port.zoom_mode {
-                    ZoomMode::FitToPage => {
-                        match dir {
-                            Dir::West | Dir::North => self.go_to_neighbor(CycleDir::Next, hub, rq, context),
-                            Dir::East | Dir::South => self.go_to_neighbor(CycleDir::Previous, hub, rq, context),
-                        };
-                    },
-                    ZoomMode::FitToWidth => {
+                    ZoomMode::FitToPage | ZoomMode::FitToWidth => {
                         match dir {
                             Dir::West => self.go_to_neighbor(CycleDir::Next, hub, rq, context),
                             Dir::East => self.go_to_neighbor(CycleDir::Previous, hub, rq, context),
@@ -3345,11 +3339,24 @@ impl View for Reader {
                                 SouthStripAction::ToggleBars => {
                                     self.toggle_bars(None, hub, rq, context);
                                 }
+                                SouthStripAction::PreviousPage => {
+                                    self.go_to_neighbor(CycleDir::Previous, hub, rq, context);
+                                }
                                 SouthStripAction::NextPage => {
                                     self.go_to_neighbor(CycleDir::Next, hub, rq, context);
                                 }
                             },
-                            Dir::North => self.toggle_bars(None, hub, rq, context),
+                            Dir::North => match context.settings.reader.north_strip {
+                                NorthStripAction::ToggleBars => {
+                                    self.toggle_bars(None, hub, rq, context);
+                                }
+                                NorthStripAction::PreviousPage => {
+                                    self.go_to_neighbor(CycleDir::Previous, hub, rq, context);
+                                }
+                                NorthStripAction::NextPage => {
+                                    self.go_to_neighbor(CycleDir::Next, hub, rq, context);
+                                }
+                            },
                         }
                     },
                     Region::Center => self.toggle_bars(None, hub, rq, context),

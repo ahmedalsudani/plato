@@ -338,6 +338,7 @@ pub struct ReaderSettings {
     pub finished: FinishedAction,
     pub south_east_corner: SouthEastCornerAction,
     pub bottom_right_gesture: BottomRightGestureAction,
+    pub north_strip: NorthStripAction,
     pub south_strip: SouthStripAction,
     pub west_strip: WestStripAction,
     pub east_strip: EastStripAction,
@@ -400,6 +401,15 @@ pub enum BottomRightGestureAction {
 #[serde(rename_all = "kebab-case")]
 pub enum SouthStripAction {
     ToggleBars,
+    PreviousPage,
+    NextPage,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NorthStripAction {
+    ToggleBars,
+    PreviousPage,
     NextPage,
 }
 
@@ -454,7 +464,8 @@ impl Default for ReaderSettings {
             finished: FinishedAction::Close,
             south_east_corner: SouthEastCornerAction::GoToPage,
             bottom_right_gesture: BottomRightGestureAction::ToggleDithered,
-            south_strip: SouthStripAction::ToggleBars,
+            north_strip: NorthStripAction::PreviousPage,
+            south_strip: SouthStripAction::NextPage,
             west_strip: WestStripAction::PreviousPage,
             east_strip: EastStripAction::NextPage,
             strip_width: 0.6,

@@ -87,7 +87,9 @@ Tap gestures by region:
 - *ES* (East Strip):
 	- Normal Mode: next page.
 	- Search Mode: next results page.
-- *CR* (Center Rectangle), *SS* (South Strip) and *NS* (North Strip): toggle the top and bottom bars.
+- *CR* (Center Rectangle): toggle the top and bottom bars.
+- *NS* (North Strip): previous page.
+- *SS* (South Strip): next page.
 - *NWC* (North-West Corner): previous location.
 - *NEC* (North-East Corner): toggle bookmark.
 - *SWC* (South-West Corner): toggle the table of contents in normal mode, previous page in search mode.
@@ -97,7 +99,7 @@ In normal mode, while the top and bottom bars are visible, tapping or swiping on
 
 Swipe west/east to go to the next/previous page.
 
-Swipe north/south to go to the next/previous page when the zoom mode is fit-to-page, and to scroll the page stream when the zoom mode is fit-to-width. If the scroll mode is set to *page*, the scrolling is limited to the current page.
+Swipe north/south to scroll the page stream when the zoom mode is fit-to-width. If the scroll mode is set to *page*, the scrolling is limited to the current page.
 
 Rotate to change the screen orientation (one finger is the center, the other describes the desired rotation with a circular motion around the center: the two fingers should land and take off simultaneously).
 
