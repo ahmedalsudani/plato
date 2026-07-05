@@ -9,7 +9,7 @@ use std::ptr;
 use std::slice;
 use std::ffi::{CString, CStr};
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use fxhash::FxHashMap;
@@ -470,6 +470,15 @@ pub fn family_names<P: AsRef<Path>>(search_path: P) -> Result<BTreeSet<String>, 
     Ok(families)
 }
 
+fn only_style<F>(styles: &FxHashMap<String, PathBuf>, pred: F) -> Option<&PathBuf>
+where F: Fn(&str) -> bool {
+    let mut matches = styles.iter().filter(|(name, _)| pred(name));
+    match (matches.next(), matches.next()) {
+        (Some((_, path)), None) => Some(path),
+        _ => None,
+    }
+}
+
 impl FontFamily {
     pub fn from_name<P: AsRef<Path>>(family_name: &str, search_path: P) -> Result<FontFamily, Error> {
         let opener = FontOpener::new()?;
@@ -502,18 +511,15 @@ impl FontFamily {
                   .or_else(|| styles.get("Roman"))
                   .or_else(|| styles.get("Book"))
                   // Variable fonts might name their default instance after
-                  // their lightest weight (e.g. Bitter's is named *Thin*).
-                  .or_else(|| styles.iter()
-                                    .find(|(name, _)| !name.contains("Italic"))
-                                    .map(|(_, path)| path))
+                  // their lightest weight (e.g. Bitter's is named *Thin*):
+                  // fall back to the only non-italic style, if there's one.
+                  .or_else(|| only_style(&styles, |name| !name.contains("Italic")))
                   .ok_or_else(|| format_err!("can't find regular style"))?
         };
         let italic_path = styles.get("Italic")
                                 .or_else(|| styles.get("Book Italic"))
                                 .or_else(|| styles.get("Regular Italic"))
-                                .or_else(|| styles.iter()
-                                                  .find(|(name, _)| name.ends_with("Italic"))
-                                                  .map(|(_, path)| path))
+                                .or_else(|| only_style(&styles, |name| name.ends_with("Italic")))
                                 .unwrap_or(regular_path);
         let bold_path = styles.get("Bold")
                               .or_else(|| styles.get("Semibold"))

@@ -1784,8 +1784,7 @@ fn default_fonts() -> Result<Fonts, Error> {
         cursive: opener.open("fonts/Parisienne-Regular.ttf")?,
         fantasy: opener.open("fonts/Delius-Regular.ttf")?,
     };
-    fonts.serif.bold.set_variations(&["wght=700"]);
-    fonts.serif.bold_italic.set_variations(&["wght=700"]);
+    apply_font_weight(&mut fonts.serif, DEFAULT_FONT_WEIGHT);
     fonts.monospace.bold.set_variations(&["wght=600"]);
     fonts.monospace.bold_italic.set_variations(&["wght=600"]);
     Ok(fonts)
