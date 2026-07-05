@@ -1490,17 +1490,12 @@ impl Reader {
             }
 
             if let Some(bottom_index) = locate::<BottomBar>(self) {
-                let mut top_rect = *self.child(top_index).rect();
-                top_rect.absorb(self.child(top_index+1).rect());
-                let mut bottom_rect = *self.child(bottom_index).rect();
-                for i in top_index+2 .. bottom_index {
-                    bottom_rect.absorb(self.child(i).rect());
-                }
-
                 self.children.drain(top_index..=bottom_index);
 
-                rq.add(RenderData::expose(top_rect, UpdateMode::Gui));
-                rq.add(RenderData::expose(bottom_rect, UpdateMode::Gui));
+                // Full refresh of the whole screen when the bars close (the
+                // last thing open while reading), to clear any accumulated
+                // ghosting before returning to plain reading.
+                rq.add(RenderData::expose(self.rect, UpdateMode::Full));
                 hub.send(Event::Focus(None)).ok();
             }
         } else {
