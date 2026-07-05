@@ -39,6 +39,20 @@ RUN useradd -m tc
 USER tc
 WORKDIR /home/tc
 
+# kernel.org has purged its entire v4.x tree, so crosstool-ng can no longer
+# fetch the linux-4.1.52 headers the kobov4 sample pins ('linux: download
+# failed'). Pre-seed the tarball into ct-ng's local tarballs directory
+# ($HOME/src, the CT_LOCAL_TARBALLS_DIR default); ct-ng uses a matching local
+# copy in preference to downloading. Pulled from the Internet Archive and
+# checked against kernel.org's own published sha256 for this release, so a
+# tampered or truncated copy fails the build here rather than silently
+# poisoning the toolchain.
+RUN mkdir -p /home/tc/src \
+ && wget -O /home/tc/src/linux-4.1.52.tar.xz \
+      'https://web.archive.org/web/20220910015250id_/https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.1.52.tar.xz' \
+ && echo '6ad9389e55e0ea57768eae173747058a4487fa3630e10a7999cfec9f945e559c  /home/tc/src/linux-4.1.52.tar.xz' \
+      | sha256sum -c -
+
 ARG KOXTOOLCHAIN_REF=2024.10
 RUN git clone https://github.com/NiLuJe/koxtoolchain.git \
  && cd koxtoolchain \
