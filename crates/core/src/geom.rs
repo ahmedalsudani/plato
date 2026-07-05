@@ -1309,7 +1309,7 @@ impl Region {
 
         if pt.y <= y1 {
             let dy = pt.y - rect.min.y;
-            if pt.x > rect.min.x + dy && pt.y <= rect.max.x - 1 - dy {
+            if pt.x > rect.min.x + dy && pt.x <= rect.max.x - 1 - dy {
                 return Region::Strip(Dir::North);
             }
         } else if pt.y >= y2 {
