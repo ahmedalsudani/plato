@@ -58,7 +58,7 @@ use crate::metadata::{Margin, CroppingMargins, make_query};
 use crate::metadata::{DEFAULT_CONTRAST_EXPONENT, DEFAULT_CONTRAST_GRAY};
 use crate::geom::{Point, Vec2, Rectangle, Boundary, CornerSpec, BorderSpec};
 use crate::geom::{Dir, DiagDir, CycleDir, LinearDir, Axis, Region, halves};
-use crate::color::{BLACK, WHITE};
+use crate::color::{BLACK, WHITE, PROGRESS_FULL, PROGRESS_EMPTY};
 use crate::context::Context;
 
 const HISTORY_SIZE: usize = 32;
@@ -95,6 +95,8 @@ pub struct Reader {
     reflowable: bool,
     ephemeral: bool,
     finished: bool,
+    progress_bar_height: i32,                        // Zero when the progress bar is inactive.
+    chapter_notches: Option<Vec<f32>>,               // Fractions of top-level TOC entries.
 }
 
 #[derive(Debug)]
@@ -251,7 +253,13 @@ impl Reader {
             let font_size = info.reader.as_ref().and_then(|r| r.font_size)
                                 .unwrap_or(settings.reader.font_size);
 
-            doc.layout(width, height, font_size, CURRENT_DEVICE.dpi);
+            let progress_bar_height = if settings.reader.progress_bar.enabled && doc.is_reflowable() {
+                scale_by_dpi(settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32
+            } else {
+                0
+            };
+
+            doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
 
             let margin_width = info.reader.as_ref().and_then(|r| r.margin_width)
                                    .unwrap_or(settings.reader.margin_width);
@@ -399,6 +407,8 @@ impl Reader {
                 ephemeral: false,
                 reflowable,
                 finished: false,
+                progress_bar_height,
+                chapter_notches: None,
             })
         })
     }
@@ -418,7 +428,12 @@ impl Reader {
         let mut doc = HtmlDocument::new_from_memory(html);
         let (width, height) = context.display.dims;
         let font_size = context.settings.reader.font_size;
-        doc.layout(width, height, font_size, CURRENT_DEVICE.dpi);
+        let progress_bar_height = if context.settings.reader.progress_bar.enabled {
+            scale_by_dpi(context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32
+        } else {
+            0
+        };
+        doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
         let pages_count = doc.pages_count();
         info.title = doc.title().unwrap_or_default();
 
@@ -464,6 +479,8 @@ impl Reader {
             ephemeral: true,
             reflowable: true,
             finished: false,
+            progress_bar_height,
+            chapter_notches: None,
         }
     }
 
@@ -1049,7 +1066,38 @@ impl Reader {
         }
     }
 
+    fn content_height(&self) -> u32 {
+        self.rect.height().saturating_sub(self.progress_bar_height as u32)
+    }
+
+    fn update_chapter_notches(&mut self, context: &Context) {
+        if self.progress_bar_height == 0 || self.chapter_notches.is_some() {
+            return;
+        }
+
+        let mut notches = Vec::new();
+
+        if context.settings.reader.progress_bar.notches && self.pages_count > 0 {
+            let mut doc = self.doc.lock().unwrap();
+            if let Some(toc) = self.toc().or_else(|| doc.toc()) {
+                for entry in &toc {
+                    if let Some(offset) = doc.resolve_location(entry.location.clone()) {
+                        let fraction = offset as f32 / self.pages_count as f32;
+                        if fraction > 0.0 && fraction < 1.0 {
+                            notches.push(fraction);
+                        }
+                    }
+                }
+                notches.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                notches.dedup();
+            }
+        }
+
+        self.chapter_notches = Some(notches);
+    }
+
     fn update(&mut self, update_mode: Option<UpdateMode>, hub: &Hub, rq: &mut RenderQueue, context: &Context) {
+        self.update_chapter_notches(context);
         self.page_turns += 1;
         let update_mode = update_mode.unwrap_or_else(|| {
             let pair = context.settings.reader.refresh_rate.by_kind
@@ -1073,12 +1121,12 @@ impl Reader {
                 self.load_text(location);
                 let Resource { frame, scale, .. } = self.cache[&location];
                 let dx = smw + ((self.rect.width() - frame.width()) as i32 - 2 * smw) / 2;
-                let dy = smw + ((self.rect.height() - frame.height()) as i32 - 2 * smw) / 2;
+                let dy = smw + ((self.content_height() - frame.height()) as i32 - 2 * smw) / 2;
                 self.chunks.push(RenderChunk { frame, location, position: pt!(dx, dy), scale });
             },
             ZoomMode::FitToWidth => match self.view_port.scroll_mode {
                 ScrollMode::Screen => {
-                    let available_height = self.rect.height() as i32 - 2 * smw;
+                    let available_height = self.content_height() as i32 - 2 * smw;
                     let mut height = 0;
                     while height < available_height {
                         self.load_pixmap(location);
@@ -1120,7 +1168,7 @@ impl Reader {
                 ScrollMode::Page => {
                     self.load_pixmap(location);
                     self.load_text(location);
-                    let available_height = self.rect.height() as i32 - 2 * smw;
+                    let available_height = self.content_height() as i32 - 2 * smw;
                     let Resource { mut frame, scale, .. } = self.cache[&location];
                     frame.min.y += self.view_port.page_offset.y;
                     frame.max.y = (frame.min.y + available_height).min(frame.max.y);
@@ -1133,7 +1181,7 @@ impl Reader {
                 self.load_text(location);
                 let Resource { frame, scale, .. } = self.cache[&location];
                 let vpw = self.rect.width() as i32 - 2 * smw;
-                let vph = self.rect.height() as i32 - 2 * smw;
+                let vph = self.content_height() as i32 - 2 * smw;
                 let vpr = rect![pt!(0), pt!(vpw, vph)] + self.view_port.page_offset + frame.min;
                 if let Some(rect) = frame.intersection(&vpr) {
                     let position = pt!(smw) + rect.min - vpr.min;
@@ -2223,7 +2271,7 @@ impl Reader {
         {
             let mut doc = self.doc.lock().unwrap();
 
-            doc.layout(width, height, font_size, CURRENT_DEVICE.dpi);
+            doc.layout(width, height.saturating_sub(self.progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
 
             if self.synthetic {
                 let current_page = self.current_page.min(doc.pages_count() - 1);
@@ -4170,6 +4218,35 @@ impl View for Reader {
                                                   &BorderSpec { thickness, color: WHITE },
                                                   &BLACK);
         }
+
+        if self.progress_bar_height > 0 {
+            let strip_rect = rect![self.rect.min.x, self.rect.max.y - self.progress_bar_height,
+                                   self.rect.max.x, self.rect.max.y];
+            if rect.intersection(&strip_rect).is_some() {
+                let progress = self.current_page as f32 / self.pages_count.max(1) as f32;
+                let x_split = strip_rect.min.x + (strip_rect.width() as f32 * progress) as i32;
+                let filled_rect = rect![strip_rect.min, pt!(x_split, strip_rect.max.y)];
+                let empty_rect = rect![pt!(x_split, strip_rect.min.y), strip_rect.max];
+                if let Some(r) = filled_rect.intersection(&rect) {
+                    fb.draw_rectangle(&r, PROGRESS_FULL);
+                }
+                if let Some(r) = empty_rect.intersection(&rect) {
+                    fb.draw_rectangle(&r, PROGRESS_EMPTY);
+                }
+                if let Some(ref notches) = self.chapter_notches {
+                    let thickness = scale_by_dpi(THICKNESS_MEDIUM, CURRENT_DEVICE.dpi) as i32;
+                    let (small_half, big_half) = halves(thickness);
+                    for fraction in notches {
+                        let x = strip_rect.min.x + (strip_rect.width() as f32 * fraction) as i32;
+                        let notch_rect = rect![pt!(x - small_half, strip_rect.min.y),
+                                               pt!(x + big_half, strip_rect.max.y)];
+                        if let Some(r) = notch_rect.intersection(&rect) {
+                            fb.draw_rectangle(&r, BLACK);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn render_rect(&self, rect: &Rectangle) -> Rectangle {
@@ -4296,7 +4373,7 @@ impl View for Reader {
                                 .and_then(|r| r.font_size)
                                 .unwrap_or(context.settings.reader.font_size);
             let mut doc = self.doc.lock().unwrap();
-            doc.layout(rect.width(), rect.height(), font_size, CURRENT_DEVICE.dpi);
+            doc.layout(rect.width(), rect.height().saturating_sub(self.progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
             let current_page = self.current_page.min(doc.pages_count() - 1);
             if let Some(location) = doc.resolve_location(Location::Exact(current_page)) {
                 self.current_page = location;

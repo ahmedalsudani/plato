@@ -360,6 +360,7 @@ pub struct ReaderSettings {
     pub dithered_kinds: FxHashSet<String>,
     pub paragraph_breaker: ParagraphBreakerSettings,
     pub refresh_rate: RefreshRateSettings,
+    pub progress_bar: ProgressBarSettings,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
@@ -367,6 +368,14 @@ pub struct ReaderSettings {
 pub struct ParagraphBreakerSettings {
     pub hyphen_penalty: i32,
     pub stretch_tolerance: f32,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct ProgressBarSettings {
+    pub enabled: bool,
+    pub notches: bool,
+    pub height: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -486,6 +495,17 @@ impl Default for ReaderSettings {
             dithered_kinds: ["cbz", "png", "jpg", "jpeg"].iter().map(|k| k.to_string()).collect(),
             paragraph_breaker: ParagraphBreakerSettings::default(),
             refresh_rate: RefreshRateSettings::default(),
+            progress_bar: ProgressBarSettings::default(),
+        }
+    }
+}
+
+impl Default for ProgressBarSettings {
+    fn default() -> Self {
+        ProgressBarSettings {
+            enabled: true,
+            notches: true,
+            height: 10.0,
         }
     }
 }
