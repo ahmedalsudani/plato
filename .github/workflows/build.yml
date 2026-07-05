@@ -10,27 +10,38 @@ concurrency:
 jobs:
   build-arm:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Ensure podman is installed
         run: command -v podman || sudo apt-get install -y --no-install-recommends podman
 
-      - name: Restore container image
-        id: image-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/plato-build-image.tar
-          key: plato-image-${{ hashFiles('Dockerfile') }}
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build or load image
+      # Persist the toolchain image in GHCR rather than the 7-day Actions cache:
+      # building it from scratch takes ~an hour and depends on upstream tarballs
+      # that can vanish (kernel.org purged the v4.x kernel this image needs).
+      # Tag by Dockerfile hash so an unchanged Dockerfile reuses the published
+      # image and only a Dockerfile change triggers a rebuild + republish.
+      - name: Pull or build the build image
+        env:
+          # GHCR repository paths must be lowercase.
+          REGISTRY_IMAGE: ghcr.io/${{ github.repository_owner }}/plato-build
         run: |
-          if [ -f ~/plato-build-image.tar ]; then
-            podman load -i ~/plato-build-image.tar
+          image="$(echo "$REGISTRY_IMAGE" | tr '[:upper:]' '[:lower:]')"
+          ref="${image}:$(sha256sum Dockerfile | cut -c1-16)"
+          if podman pull "$ref"; then
+            echo "Reusing published image $ref"
+            podman tag "$ref" plato-build
           else
+            echo "No published image for this Dockerfile; building $ref"
             # crosstool-ng needs more than 1024 open files
-            podman build --ulimit nofile=2048:2048 -t plato-build .
-            podman save -o ~/plato-build-image.tar plato-build
+            podman build --ulimit nofile=2048:2048 -t plato-build -t "$ref" .
+            podman push "$ref"
           fi
 
       - name: Cache compiled C dependencies
