@@ -622,6 +622,11 @@ pub fn run() -> Result<(), Error> {
                             .ok();
                     context.online = false;
                 }
+                if context.settings.bluetooth {
+                    Command::new("scripts/bluetooth-disable.sh")
+                            .status()
+                            .ok();
+                }
                 // https://github.com/koreader/koreader/commit/71afe36
                 schedule_task(TaskId::Suspend, Event::Suspend,
                               SUSPEND_WAIT_DELAY, &tx, &mut tasks);
