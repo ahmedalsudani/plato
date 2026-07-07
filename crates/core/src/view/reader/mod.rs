@@ -95,7 +95,8 @@ pub struct Reader {
     reflowable: bool,
     ephemeral: bool,
     finished: bool,
-    progress_bar_height: i32,                        // Zero when the progress bar is inactive.
+    progress_bar_height: i32,                        // Full strip reserved at the bottom; zero when inactive.
+    progress_bar_margin: i32,                        // Whitespace left, right and below the bar.
     chapter_notches: Option<Vec<f32>>,               // Fractions of top-level TOC entries.
 }
 
@@ -253,10 +254,12 @@ impl Reader {
             let font_size = info.reader.as_ref().and_then(|r| r.font_size)
                                 .unwrap_or(settings.reader.font_size);
 
-            let progress_bar_height = if settings.reader.progress_bar.enabled && doc.is_reflowable() {
-                scale_by_dpi(settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32
+            let (progress_bar_height, progress_bar_margin) = if settings.reader.progress_bar.enabled && doc.is_reflowable() {
+                let margin = scale_by_dpi(settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
+                let bar = scale_by_dpi(1.5 * settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
+                (bar + margin, margin)
             } else {
-                0
+                (0, 0)
             };
 
             doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
@@ -408,6 +411,7 @@ impl Reader {
                 reflowable,
                 finished: false,
                 progress_bar_height,
+                progress_bar_margin,
                 chapter_notches: None,
             })
         })
@@ -428,10 +432,12 @@ impl Reader {
         let mut doc = HtmlDocument::new_from_memory(html);
         let (width, height) = context.display.dims;
         let font_size = context.settings.reader.font_size;
-        let progress_bar_height = if context.settings.reader.progress_bar.enabled {
-            scale_by_dpi(context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32
+        let (progress_bar_height, progress_bar_margin) = if context.settings.reader.progress_bar.enabled {
+            let margin = scale_by_dpi(context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
+            let bar = scale_by_dpi(1.5 * context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
+            (bar + margin, margin)
         } else {
-            0
+            (0, 0)
         };
         doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
         let pages_count = doc.pages_count();
@@ -480,6 +486,7 @@ impl Reader {
             reflowable: true,
             finished: false,
             progress_bar_height,
+            progress_bar_margin,
             chapter_notches: None,
         }
     }
@@ -4223,26 +4230,29 @@ impl View for Reader {
             let strip_rect = rect![self.rect.min.x, self.rect.max.y - self.progress_bar_height,
                                    self.rect.max.x, self.rect.max.y];
             if rect.intersection(&strip_rect).is_some() {
+                fb.draw_rectangle(&strip_rect, WHITE);
+                let margin = self.progress_bar_margin;
+                let bar_rect = rect![strip_rect.min.x + margin, strip_rect.min.y,
+                                     strip_rect.max.x - margin, strip_rect.max.y - margin];
+                let radius = bar_rect.height() as i32 / 2;
+                let border_thickness = 1;
                 let progress = self.current_page as f32 / self.pages_count.max(1) as f32;
-                let x_split = strip_rect.min.x + (strip_rect.width() as f32 * progress) as i32;
-                let filled_rect = rect![strip_rect.min, pt!(x_split, strip_rect.max.y)];
-                let empty_rect = rect![pt!(x_split, strip_rect.min.y), strip_rect.max];
-                if let Some(r) = filled_rect.intersection(&rect) {
-                    fb.draw_rectangle(&r, PROGRESS_FULL);
-                }
-                if let Some(r) = empty_rect.intersection(&rect) {
-                    fb.draw_rectangle(&r, PROGRESS_EMPTY);
-                }
+                let x_split = bar_rect.min.x + (bar_rect.width() as f32 * progress) as i32;
+                fb.draw_rounded_rectangle_with_border(&bar_rect,
+                                                      &CornerSpec::Uniform(radius),
+                                                      &BorderSpec { thickness: border_thickness as u16, color: BLACK },
+                                                      &|x: i32, _y: i32| if x < x_split { PROGRESS_FULL } else { PROGRESS_EMPTY });
                 if let Some(ref notches) = self.chapter_notches {
-                    let thickness = scale_by_dpi(THICKNESS_MEDIUM, CURRENT_DEVICE.dpi) as i32;
+                    let thickness = 2 * scale_by_dpi(THICKNESS_MEDIUM, CURRENT_DEVICE.dpi) as i32;
                     let (small_half, big_half) = halves(thickness);
                     for fraction in notches {
-                        let x = strip_rect.min.x + (strip_rect.width() as f32 * fraction) as i32;
-                        let notch_rect = rect![pt!(x - small_half, strip_rect.min.y),
-                                               pt!(x + big_half, strip_rect.max.y)];
-                        if let Some(r) = notch_rect.intersection(&rect) {
-                            fb.draw_rectangle(&r, BLACK);
-                        }
+                        let x = (bar_rect.min.x + (bar_rect.width() as f32 * fraction) as i32)
+                                .clamp(bar_rect.min.x + radius, bar_rect.max.x - radius);
+                        let notch_rect = rect![pt!(x - small_half, bar_rect.min.y + border_thickness),
+                                               pt!(x + big_half, bar_rect.max.y - border_thickness)];
+                        fb.draw_rounded_rectangle(&notch_rect,
+                                                  &CornerSpec::Uniform(notch_rect.width() as i32 / 2),
+                                                  BLACK);
                     }
                 }
             }
