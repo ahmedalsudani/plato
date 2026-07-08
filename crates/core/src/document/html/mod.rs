@@ -406,6 +406,10 @@ impl Document for HtmlDocument {
         self.pages.clear();
     }
 
+    fn margin(&self) -> Edge {
+        self.engine.margin
+    }
+
     fn set_line_height(&mut self, line_height: f32) {
         self.engine.set_line_height(line_height);
         self.pages.clear();

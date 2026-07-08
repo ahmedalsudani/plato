@@ -10,7 +10,7 @@ use crate::framebuffer::Pixmap;
 use crate::helpers::{Normalize, decode_entities};
 use crate::document::{Document, Location, TextLocation, TocEntry, BoundedText, chapter_from_uri};
 use crate::unit::pt_to_px;
-use crate::geom::{Boundary, CycleDir};
+use crate::geom::{Boundary, CycleDir, Edge};
 use super::pdf::PdfOpener;
 use super::html::dom::{XmlTree, NodeRef};
 use super::html::engine::{Page, Engine, ResourceFetcher};
@@ -895,6 +895,10 @@ impl Document for EpubDocument {
     fn set_margin_width(&mut self, width: i32) {
         self.engine.set_margin_width(width);
         self.cache.clear();
+    }
+
+    fn margin(&self) -> Edge {
+        self.engine.margin
     }
 
     fn set_line_height(&mut self, line_height: f32) {

@@ -26,7 +26,7 @@ use self::djvu::DjvuOpener;
 use self::pdf::PdfOpener;
 use self::epub::EpubDocument;
 use self::html::HtmlDocument;
-use crate::geom::{Boundary, CycleDir};
+use crate::geom::{Boundary, CycleDir, Edge};
 use crate::metadata::{TextAlign, Annotation};
 use crate::framebuffer::Pixmap;
 use crate::settings::INTERNAL_CARD_ROOT;
@@ -106,6 +106,9 @@ pub trait Document: Send+Sync {
     fn set_font_family(&mut self, family_name: &str, search_path: &str);
     fn set_font_weight(&mut self, weight: f32);
     fn set_margin_width(&mut self, width: i32);
+    fn margin(&self) -> Edge {
+        Edge::default()
+    }
     fn set_text_align(&mut self, text_align: TextAlign);
     fn set_line_height(&mut self, line_height: f32);
     fn set_hyphen_penalty(&mut self, hyphen_penalty: i32);

@@ -96,7 +96,8 @@ pub struct Reader {
     ephemeral: bool,
     finished: bool,
     progress_bar_height: i32,                        // Full strip reserved at the bottom; zero when inactive.
-    progress_bar_margin: i32,                        // Whitespace left, right and below the bar.
+    progress_bar_margin: i32,                        // Whitespace below the bar.
+    progress_bar_side_margin: i32,                   // Whitespace left and right of the bar; matches the book margin.
     chapter_notches: Option<Vec<f32>>,               // Fractions of top-level TOC entries.
 }
 
@@ -271,6 +272,8 @@ impl Reader {
                 doc.set_margin_width(margin_width);
             }
 
+            let progress_bar_side_margin = doc.margin().left;
+
             let font_family = info.reader.as_ref().and_then(|r| r.font_family.as_ref())
                                   .unwrap_or(&settings.reader.font_family);
 
@@ -412,6 +415,7 @@ impl Reader {
                 finished: false,
                 progress_bar_height,
                 progress_bar_margin,
+                progress_bar_side_margin,
                 chapter_notches: None,
             })
         })
@@ -440,6 +444,7 @@ impl Reader {
             (0, 0)
         };
         doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
+        let progress_bar_side_margin = doc.margin().left;
         let pages_count = doc.pages_count();
         info.title = doc.title().unwrap_or_default();
 
@@ -487,6 +492,7 @@ impl Reader {
             finished: false,
             progress_bar_height,
             progress_bar_margin,
+            progress_bar_side_margin,
             chapter_notches: None,
         }
     }
@@ -2449,6 +2455,7 @@ impl Reader {
         if self.reflowable {
             let mut doc = self.doc.lock().unwrap();
             doc.set_margin_width(width);
+            self.progress_bar_side_margin = doc.margin().left;
 
             if self.synthetic {
                 let current_page = self.current_page.min(doc.pages_count() - 1);
@@ -4231,9 +4238,10 @@ impl View for Reader {
                                    self.rect.max.x, self.rect.max.y];
             if rect.intersection(&strip_rect).is_some() {
                 fb.draw_rectangle(&strip_rect, WHITE);
-                let margin = self.progress_bar_margin;
-                let bar_rect = rect![strip_rect.min.x + margin, strip_rect.min.y,
-                                     strip_rect.max.x - margin, strip_rect.max.y - margin];
+                let side_margin = self.progress_bar_side_margin;
+                let bottom_margin = self.progress_bar_margin;
+                let bar_rect = rect![strip_rect.min.x + side_margin, strip_rect.min.y,
+                                     strip_rect.max.x - side_margin, strip_rect.max.y - bottom_margin];
                 let radius = bar_rect.height() as i32 / 2;
                 let border_thickness = 1;
                 let progress = self.current_page as f32 / self.pages_count.max(1) as f32;
