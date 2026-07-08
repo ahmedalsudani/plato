@@ -97,7 +97,7 @@ pub struct Reader {
     finished: bool,
     progress_bar_height: i32,                        // Full strip reserved at the bottom: bar thickness plus bottom margin; zero when inactive.
     progress_bar_side_margin: i32,                   // Whitespace left and right of the bar; matches the book margin.
-    progress_bar_bottom_margin: i32,                 // Whitespace below the bar; matches the book margin.
+    progress_bar_bottom_margin: i32,                 // Whitespace below the bar; half the book margin.
     chapter_notches: Option<Vec<f32>>,               // Fractions of top-level TOC entries.
 }
 
@@ -273,7 +273,7 @@ impl Reader {
 
             let doc_margin = doc.margin();
             let progress_bar_side_margin = doc_margin.left;
-            let progress_bar_bottom_margin = doc_margin.bottom;
+            let progress_bar_bottom_margin = doc_margin.bottom / 2;
 
             let progress_bar_height = if bar_thickness > 0 {
                 bar_thickness + progress_bar_bottom_margin
@@ -447,7 +447,7 @@ impl Reader {
         let font_size = context.settings.reader.font_size;
         let doc_margin = doc.margin();
         let progress_bar_side_margin = doc_margin.left;
-        let progress_bar_bottom_margin = doc_margin.bottom;
+        let progress_bar_bottom_margin = doc_margin.bottom / 2;
         let progress_bar_height = if context.settings.reader.progress_bar.enabled {
             let bar_thickness = scale_by_dpi(1.5 * context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
             bar_thickness + progress_bar_bottom_margin
@@ -2467,11 +2467,11 @@ impl Reader {
             doc.set_margin_width(width);
             let doc_margin = doc.margin();
             self.progress_bar_side_margin = doc_margin.left;
-            self.progress_bar_bottom_margin = doc_margin.bottom;
+            self.progress_bar_bottom_margin = doc_margin.bottom / 2;
 
             if self.progress_bar_height > 0 {
                 let bar_thickness = scale_by_dpi(1.5 * context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
-                self.progress_bar_height = bar_thickness + doc_margin.bottom;
+                self.progress_bar_height = bar_thickness + self.progress_bar_bottom_margin;
                 let (display_width, display_height) = context.display.dims;
                 let font_size = self.info.reader.as_ref().and_then(|r| r.font_size)
                                     .unwrap_or(context.settings.reader.font_size);
