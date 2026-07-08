@@ -56,7 +56,7 @@ use crate::document::html::HtmlDocument;
 use crate::metadata::{Info, FileInfo, ReaderInfo, Annotation, TextAlign, ZoomMode, ScrollMode, PageScheme};
 use crate::metadata::{Margin, CroppingMargins, make_query};
 use crate::metadata::{DEFAULT_CONTRAST_EXPONENT, DEFAULT_CONTRAST_GRAY};
-use crate::geom::{Point, Vec2, Rectangle, Boundary, CornerSpec, BorderSpec};
+use crate::geom::{Point, Vec2, Rectangle, Boundary, CornerSpec, BorderSpec, Edge};
 use crate::geom::{Dir, DiagDir, CycleDir, LinearDir, Axis, Region, halves};
 use crate::color::{BLACK, WHITE, PROGRESS_FULL, PROGRESS_EMPTY};
 use crate::context::Context;
@@ -281,6 +281,11 @@ impl Reader {
                 0
             };
 
+            if progress_bar_height > 0 {
+                // Halve the text's bottom margin so it sits closer to the progress bar.
+                doc.set_margin(&Edge { bottom: progress_bar_bottom_margin, ..doc_margin });
+            }
+
             doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
 
             let font_family = info.reader.as_ref().and_then(|r| r.font_family.as_ref())
@@ -454,6 +459,10 @@ impl Reader {
         } else {
             0
         };
+        if progress_bar_height > 0 {
+            // Halve the text's bottom margin so it sits closer to the progress bar.
+            doc.set_margin(&Edge { bottom: progress_bar_bottom_margin, ..doc_margin });
+        }
         doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
         let pages_count = doc.pages_count();
         info.title = doc.title().unwrap_or_default();
@@ -2472,6 +2481,8 @@ impl Reader {
             if self.progress_bar_height > 0 {
                 let bar_thickness = scale_by_dpi(1.5 * context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
                 self.progress_bar_height = bar_thickness + self.progress_bar_bottom_margin;
+                // Halve the text's bottom margin so it sits closer to the progress bar.
+                doc.set_margin(&Edge { bottom: self.progress_bar_bottom_margin, ..doc_margin });
                 let (display_width, display_height) = context.display.dims;
                 let font_size = self.info.reader.as_ref().and_then(|r| r.font_size)
                                     .unwrap_or(context.settings.reader.font_size);

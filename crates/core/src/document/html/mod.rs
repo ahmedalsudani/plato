@@ -102,11 +102,6 @@ impl HtmlDocument {
         self.pages.clear();
     }
 
-    pub fn set_margin(&mut self, margin: &Edge) {
-        self.engine.set_margin(margin);
-        self.pages.clear();
-    }
-
     pub fn set_font_size(&mut self, font_size: f32) {
         self.engine.set_font_size(font_size);
         self.pages.clear();
@@ -403,6 +398,11 @@ impl Document for HtmlDocument {
 
     fn set_margin_width(&mut self, width: i32) {
         self.engine.set_margin_width(width);
+        self.pages.clear();
+    }
+
+    fn set_margin(&mut self, margin: &Edge) {
+        self.engine.set_margin(margin);
         self.pages.clear();
     }
 

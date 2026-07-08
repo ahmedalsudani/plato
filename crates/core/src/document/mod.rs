@@ -106,6 +106,7 @@ pub trait Document: Send+Sync {
     fn set_font_family(&mut self, family_name: &str, search_path: &str);
     fn set_font_weight(&mut self, weight: f32);
     fn set_margin_width(&mut self, width: i32);
+    fn set_margin(&mut self, _margin: &Edge) {}
     fn margin(&self) -> Edge {
         Edge::default()
     }
