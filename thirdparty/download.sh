@@ -21,18 +21,37 @@ declare -A urls=(
 	["mupdf"]="https://casper.mupdf.com/downloads/archive/mupdf-1.27.0-source.tar.gz"
 )
 
+# Downloaded tarballs are kept here so repeat builds (and CI cache restores)
+# don't re-fetch them from upstream mirrors, some of which are flaky.
+downloads="downloads"
+mkdir -p "$downloads"
+
 for name in "${@:-${!urls[@]}}" ; do
 	url="${urls[$name]}"
 	if [ ! "$url" ] ; then
 		echo "Unknown library: ${name}." 1>&2
 		exit 1
 	fi
-	echo "Downloading ${name}."
+	# Cache each tarball as "<pkg>-<url-basename>": the basename carries the
+	# version (so a bump fetches a fresh file), and the package prefix keeps
+	# generic names like GitHub's v1.2.3.tar.gz from colliding across packages.
+	tarball="${downloads}/${name}-$(basename "$url")"
+	if [ -s "$tarball" ] ; then
+		echo "Using cached ${name} (${tarball##*/})."
+	else
+		echo "Downloading ${name}."
+		# Fetch to a temp file and publish it only on success so an interrupted
+		# transfer never leaves a corrupt tarball in the cache. Retry to ride
+		# out flaky mirrors (e.g. download.savannah.gnu.org).
+		wget -q --show-progress \
+			--tries=5 --retry-connrefused --waitretry=5 --timeout=30 \
+			-O "${tarball}.part" "$url"
+		mv "${tarball}.part" "$tarball"
+	fi
 	if [ -d "$name" ]; then
 		git ls-files -o --directory -z "$name" | xargs -0 rm -rf
 	else
 		mkdir "$name"
 	fi
-	wget -q --show-progress -O "${name}.tgz" "$url"
-	tar -xz --strip-components 1 -C "$name" -f "${name}.tgz" && rm "${name}.tgz"
+	tar -xz --strip-components 1 -C "$name" -f "$tarball"
 done

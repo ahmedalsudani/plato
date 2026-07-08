@@ -44,6 +44,17 @@ jobs:
             podman push "$ref"
           fi
 
+      # Keep the upstream source tarballs across runs, keyed only on the URL
+      # list, so an unchanged download.sh never re-hits the (often flaky)
+      # mirrors even when the compiled-deps cache below is invalidated.
+      - name: Cache thirdparty source tarballs
+        uses: actions/cache@v4
+        with:
+          path: thirdparty/downloads
+          key: plato-tarballs-${{ hashFiles('thirdparty/download.sh') }}
+          restore-keys: |
+            plato-tarballs-
+
       - name: Cache compiled C dependencies
         uses: actions/cache@v4
         with:
