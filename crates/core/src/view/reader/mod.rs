@@ -96,8 +96,8 @@ pub struct Reader {
     ephemeral: bool,
     finished: bool,
     progress_bar_height: i32,                        // Full strip reserved at the bottom; zero when inactive.
-    progress_bar_margin: i32,                        // Whitespace below the bar.
     progress_bar_side_margin: i32,                   // Whitespace left and right of the bar; matches the book margin.
+    progress_bar_bottom_margin: i32,                 // Whitespace below the bar; matches the book margin.
     chapter_notches: Option<Vec<f32>>,               // Fractions of top-level TOC entries.
 }
 
@@ -255,12 +255,12 @@ impl Reader {
             let font_size = info.reader.as_ref().and_then(|r| r.font_size)
                                 .unwrap_or(settings.reader.font_size);
 
-            let (progress_bar_height, progress_bar_margin) = if settings.reader.progress_bar.enabled && doc.is_reflowable() {
+            let progress_bar_height = if settings.reader.progress_bar.enabled && doc.is_reflowable() {
                 let margin = scale_by_dpi(settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
                 let bar = scale_by_dpi(1.5 * settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
-                (bar + margin, margin)
+                bar + margin
             } else {
-                (0, 0)
+                0
             };
 
             doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
@@ -272,7 +272,9 @@ impl Reader {
                 doc.set_margin_width(margin_width);
             }
 
-            let progress_bar_side_margin = doc.margin().left;
+            let doc_margin = doc.margin();
+            let progress_bar_side_margin = doc_margin.left;
+            let progress_bar_bottom_margin = doc_margin.bottom;
 
             let font_family = info.reader.as_ref().and_then(|r| r.font_family.as_ref())
                                   .unwrap_or(&settings.reader.font_family);
@@ -414,8 +416,8 @@ impl Reader {
                 reflowable,
                 finished: false,
                 progress_bar_height,
-                progress_bar_margin,
                 progress_bar_side_margin,
+                progress_bar_bottom_margin,
                 chapter_notches: None,
             })
         })
@@ -436,15 +438,17 @@ impl Reader {
         let mut doc = HtmlDocument::new_from_memory(html);
         let (width, height) = context.display.dims;
         let font_size = context.settings.reader.font_size;
-        let (progress_bar_height, progress_bar_margin) = if context.settings.reader.progress_bar.enabled {
+        let progress_bar_height = if context.settings.reader.progress_bar.enabled {
             let margin = scale_by_dpi(context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
             let bar = scale_by_dpi(1.5 * context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
-            (bar + margin, margin)
+            bar + margin
         } else {
-            (0, 0)
+            0
         };
         doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
-        let progress_bar_side_margin = doc.margin().left;
+        let doc_margin = doc.margin();
+        let progress_bar_side_margin = doc_margin.left;
+        let progress_bar_bottom_margin = doc_margin.bottom;
         let pages_count = doc.pages_count();
         info.title = doc.title().unwrap_or_default();
 
@@ -491,8 +495,8 @@ impl Reader {
             reflowable: true,
             finished: false,
             progress_bar_height,
-            progress_bar_margin,
             progress_bar_side_margin,
+            progress_bar_bottom_margin,
             chapter_notches: None,
         }
     }
@@ -2455,7 +2459,9 @@ impl Reader {
         if self.reflowable {
             let mut doc = self.doc.lock().unwrap();
             doc.set_margin_width(width);
-            self.progress_bar_side_margin = doc.margin().left;
+            let doc_margin = doc.margin();
+            self.progress_bar_side_margin = doc_margin.left;
+            self.progress_bar_bottom_margin = doc_margin.bottom;
 
             if self.synthetic {
                 let current_page = self.current_page.min(doc.pages_count() - 1);
@@ -4239,7 +4245,7 @@ impl View for Reader {
             if rect.intersection(&strip_rect).is_some() {
                 fb.draw_rectangle(&strip_rect, WHITE);
                 let side_margin = self.progress_bar_side_margin;
-                let bottom_margin = self.progress_bar_margin;
+                let bottom_margin = self.progress_bar_bottom_margin;
                 let bar_rect = rect![strip_rect.min.x + side_margin, strip_rect.min.y,
                                      strip_rect.max.x - side_margin, strip_rect.max.y - bottom_margin];
                 let radius = bar_rect.height() as i32 / 2;
