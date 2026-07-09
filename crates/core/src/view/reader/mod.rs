@@ -69,12 +69,13 @@ const MEM_SCHEME: &str = "mem:";
 // Progress bar thickness, in points.
 const PROGRESS_BAR_HEIGHT_PT: f32 = 1.0;
 // Whitespace below the progress bar, leaving room for footer text.
-const PROGRESS_BAR_BOTTOM_MARGIN_PT: f32 = 20.0;
-// Chapter markers: a pair of short black lines hovering above and below the
-// bar. Width, thickness, and gap in points.
+const PROGRESS_BAR_BOTTOM_MARGIN_PT: f32 = 12.0;
+// Chapter markers: inverted vertical ticks inside the bar -- black over the
+// unread (grey) portion, white over the read (black) portion. Width in points.
 const CHAPTER_MARKER_WIDTH_PT: f32 = 2.0;
-const CHAPTER_MARKER_THICKNESS_PT: f32 = 1.0;
-const CHAPTER_MARKER_GAP_PT: f32 = 0.5;
+// End caps bracketing the bar: width equals the bar thickness, height is this
+// multiple of that width.
+const PROGRESS_BAR_CAP_HEIGHT_RATIO: i32 = 5;
 
 pub struct Reader {
     id: Id,
@@ -4367,11 +4368,14 @@ impl View for Reader {
                 let side_margin = self.progress_bar_side_margin;
                 let bottom_margin = self.progress_bar_bottom_margin;
                 let dpi = CURRENT_DEVICE.dpi;
-                let marker_thickness = pt_to_px(CHAPTER_MARKER_THICKNESS_PT, dpi) as i32;
-                let marker_gap = pt_to_px(CHAPTER_MARKER_GAP_PT, dpi) as i32;
                 let bar_thickness = self.progress_bar_height - bottom_margin;
-                // Push the bar down within the strip so the upper chapter line has room.
-                let bar_top = strip_rect.min.y + marker_thickness + marker_gap;
+                // End caps: vertical ticks just outside each end of the bar,
+                // as wide as the bar is thick and centred on it.
+                let cap_width = bar_thickness;
+                let cap_height = PROGRESS_BAR_CAP_HEIGHT_RATIO * bar_thickness;
+                let cap_overhang = (cap_height - bar_thickness) / 2;
+                // Drop the bar within the strip so the taller caps stay inside it.
+                let bar_top = strip_rect.min.y + cap_overhang;
                 let bar_rect = rect![strip_rect.min.x + side_margin, bar_top,
                                      strip_rect.max.x - side_margin, bar_top + bar_thickness];
                 let progress = self.current_page as f32 / self.pages_count.max(1) as f32;
@@ -4389,18 +4393,25 @@ impl View for Reader {
                     for fraction in notches {
                         let x = (bar_rect.min.x + (bar_rect.width() as f32 * fraction) as i32)
                                 .clamp(bar_rect.min.x + small_half, bar_rect.max.x - big_half);
-                        // A pair of black lines hovering above and below the bar.
-                        let above_rect = rect![pt!(x - small_half, bar_rect.min.y - marker_gap - marker_thickness),
-                                               pt!(x + big_half, bar_rect.min.y - marker_gap)];
-                        let below_rect = rect![pt!(x - small_half, bar_rect.max.y + marker_gap),
-                                               pt!(x + big_half, bar_rect.max.y + marker_gap + marker_thickness)];
-                        fb.draw_rectangle(&above_rect, BLACK);
-                        fb.draw_rectangle(&below_rect, BLACK);
+                        // Inline tick, inverted against the portion it sits on.
+                        let color = if x < x_split { WHITE } else { BLACK };
+                        let marker_rect = rect![pt!(x - small_half, bar_rect.min.y),
+                                                pt!(x + big_half, bar_rect.max.y)];
+                        fb.draw_rectangle(&marker_rect, color);
                     }
                 }
+                // End caps just outside each end, so they are not part of the bar.
+                let cap_top = bar_rect.min.y - cap_overhang;
+                let cap_bottom = bar_rect.max.y + cap_overhang;
+                let left_cap = rect![pt!(bar_rect.min.x - cap_width, cap_top),
+                                     pt!(bar_rect.min.x, cap_bottom)];
+                let right_cap = rect![pt!(bar_rect.max.x, cap_top),
+                                      pt!(bar_rect.max.x + cap_width, cap_bottom)];
+                fb.draw_rectangle(&left_cap, BLACK);
+                fb.draw_rectangle(&right_cap, BLACK);
                 // Footer below the bar: page-in-chapter (left), book title
                 // (center), clock and battery (right).
-                let footer_rect = rect![bar_rect.min.x, bar_rect.max.y + marker_gap + marker_thickness,
+                let footer_rect = rect![bar_rect.min.x, bar_rect.max.y,
                                         bar_rect.max.x, strip_rect.max.y];
                 if footer_rect.height() > 0 {
                     let font = font_from_style(fonts, &MD_SIZE, dpi);
