@@ -27,7 +27,7 @@ use crate::view::{SMALL_BAR_HEIGHT, BIG_BAR_HEIGHT, THICKNESS_MEDIUM};
 use crate::unit::{scale_by_dpi, mm_to_px, pt_to_px};
 use crate::device::CURRENT_DEVICE;
 use crate::helpers::AsciiExtension;
-use crate::font::Fonts;
+use crate::font::{Fonts, font_from_style, MD_SIZE};
 use crate::font::family_names;
 use self::margin_cropper::{MarginCropper, BUTTON_DIAMETER};
 use super::top_bar::TopBar;
@@ -58,7 +58,7 @@ use crate::metadata::{Margin, CroppingMargins, make_query};
 use crate::metadata::{DEFAULT_CONTRAST_EXPONENT, DEFAULT_CONTRAST_GRAY};
 use crate::geom::{Point, Vec2, Rectangle, Boundary, CornerSpec, BorderSpec, Edge};
 use crate::geom::{Dir, DiagDir, CycleDir, LinearDir, Axis, Region, halves};
-use crate::color::{BLACK, WHITE, PROGRESS_EMPTY};
+use crate::color::{BLACK, WHITE, PROGRESS_EMPTY, BATTERY_FILL};
 use crate::context::Context;
 
 const HISTORY_SIZE: usize = 32;
@@ -106,6 +106,9 @@ pub struct Reader {
     progress_bar_side_margin: i32,                   // Whitespace left and right of the bar; matches the book margin.
     progress_bar_bottom_margin: i32,                 // Whitespace below the bar; half the book margin.
     chapter_notches: Option<Vec<f32>>,               // Fractions of top-level TOC entries.
+    footer_chapter: String,                          // Page position within the current chapter.
+    footer_time: String,                             // Cached clock, refreshed on ClockTick.
+    footer_battery: Option<f32>,                     // Cached battery capacity, refreshed on BatteryTick.
 }
 
 #[derive(Debug)]
@@ -251,9 +254,49 @@ fn word_separator(lang: &str) -> &'static str {
     }
 }
 
+fn time_label(context: &Context) -> String {
+    Local::now().format(&context.settings.time_format).to_string()
+}
+
+fn battery_capacity(context: &mut Context) -> Option<f32> {
+    context.battery.capacity().ok()
+           .and_then(|v| v.first().copied())
+}
+
+// "current / total" page position within the current chapter. Page counts are
+// in the document's native unit (page index, or byte offset for reflowable
+// documents, hence the BYTES_PER_PAGE conversion for synthetic ones).
+fn chapter_position_label(doc: &mut dyn Document, current_page: usize, pages_count: usize,
+                          synthetic: bool, toc: &[TocEntry]) -> String {
+    let chap_start = match doc.chapter(current_page, toc) {
+        Some((c, _)) => {
+            let loc = c.location.clone();
+            doc.resolve_location(loc).unwrap_or(0)
+        },
+        None => 0,
+    };
+    let next_start = match doc.chapter_relative(current_page, CycleDir::Next, toc) {
+        Some(c) => {
+            let loc = c.location.clone();
+            doc.resolve_location(loc).unwrap_or(pages_count)
+        },
+        None => pages_count,
+    };
+    let into = current_page.saturating_sub(chap_start);
+    let total = next_start.saturating_sub(chap_start).max(1);
+    if synthetic {
+        format!("{:.1} / {:.1}", into as f64 / BYTES_PER_PAGE, total as f64 / BYTES_PER_PAGE)
+    } else {
+        format!("{} / {}", into + 1, total)
+    }
+}
+
 impl Reader {
     pub fn new(rect: Rectangle, mut info: Info, hub: &Hub, context: &mut Context) -> Option<Reader> {
         let id = ID_FEEDER.next();
+        // Read the battery before borrowing context.settings below (which is
+        // held for the rest of this function); capacity() needs &mut context.
+        let footer_battery = battery_capacity(context);
         let settings = &context.settings;
         let path = context.library.home.join(&info.file.path);
 
@@ -407,6 +450,11 @@ impl Reader {
 
             hub.send(Event::Update(UpdateMode::Partial)).ok();
 
+            let footer_chapter = doc.toc()
+                .map(|toc| chapter_position_label(doc.as_mut(), current_page, pages_count, synthetic, &toc))
+                .unwrap_or_default();
+            let footer_time = time_label(context);
+
             Some(Reader {
                 id,
                 rect,
@@ -439,6 +487,9 @@ impl Reader {
                 progress_bar_side_margin,
                 progress_bar_bottom_margin,
                 chapter_notches: None,
+                footer_chapter,
+                footer_time,
+                footer_battery,
             })
         })
     }
@@ -490,6 +541,9 @@ impl Reader {
 
         hub.send(Event::Update(UpdateMode::Partial)).ok();
 
+        let footer_time = time_label(context);
+        let footer_battery = battery_capacity(context);
+
         Reader {
             id,
             rect,
@@ -522,6 +576,9 @@ impl Reader {
             progress_bar_side_margin,
             progress_bar_bottom_margin,
             chapter_notches: None,
+            footer_chapter: String::new(),
+            footer_time,
+            footer_battery,
         }
     }
 
@@ -1000,10 +1057,15 @@ impl Reader {
     }
 
     fn update_bottom_bar(&mut self, rq: &mut RenderQueue) {
+        let current_page = self.current_page;
+        let mut doc = self.doc.lock().unwrap();
+        let rtoc = self.toc().or_else(|| doc.toc());
+        // Cache the footer's chapter position; the footer is drawn even when the
+        // bottom bar isn't present.
+        self.footer_chapter = rtoc.as_ref()
+            .map(|toc| chapter_position_label(doc.as_mut(), current_page, self.pages_count, self.synthetic, toc))
+            .unwrap_or_default();
         if let Some(index) = locate::<BottomBar>(self) {
-            let current_page = self.current_page;
-            let mut doc = self.doc.lock().unwrap();
-            let rtoc = self.toc().or_else(|| doc.toc());
             let chapter = rtoc.as_ref().and_then(|toc| doc.chapter(current_page, toc));
             let title = chapter.map(|(c, _)| c.title.clone())
                                .unwrap_or_default();
@@ -1581,6 +1643,11 @@ impl Reader {
 
             if let Some(bottom_index) = locate::<BottomBar>(self) {
                 self.children.drain(top_index..=bottom_index);
+
+                // The footer was hidden behind the bars; refresh its clock and
+                // battery so they're current when it's revealed.
+                self.footer_time = time_label(context);
+                self.footer_battery = battery_capacity(context);
 
                 // Full refresh of the whole screen when the bars close (the
                 // last thing open while reading), to clear any accumulated
@@ -3524,6 +3591,20 @@ impl View for Reader {
                 self.state = State::Idle;
                 true
             },
+            Event::ClockTick if self.progress_bar_height > 0 => {
+                self.footer_time = time_label(context);
+                let strip_rect = rect![self.rect.min.x, self.rect.max.y - self.progress_bar_height,
+                                       self.rect.max.x, self.rect.max.y];
+                rq.add(RenderData::new(self.id, strip_rect, UpdateMode::Gui));
+                true
+            },
+            Event::BatteryTick if self.progress_bar_height > 0 => {
+                self.footer_battery = battery_capacity(context);
+                let strip_rect = rect![self.rect.min.x, self.rect.max.y - self.progress_bar_height,
+                                       self.rect.max.x, self.rect.max.y];
+                rq.add(RenderData::new(self.id, strip_rect, UpdateMode::Gui));
+                true
+            },
             Event::Update(mode) => {
                 self.update(Some(mode), hub, rq, context);
                 true
@@ -4152,7 +4233,7 @@ impl View for Reader {
         }
     }
 
-    fn render(&self, fb: &mut dyn Framebuffer, rect: Rectangle, _fonts: &mut Fonts) {
+    fn render(&self, fb: &mut dyn Framebuffer, rect: Rectangle, fonts: &mut Fonts) {
         fb.draw_rectangle(&rect, WHITE);
 
         for chunk in &self.chunks {
@@ -4313,6 +4394,69 @@ impl View for Reader {
                                                pt!(x + big_half, bar_rect.max.y + marker_gap + marker_thickness)];
                         fb.draw_rectangle(&above_rect, BLACK);
                         fb.draw_rectangle(&below_rect, BLACK);
+                    }
+                }
+                // Footer below the bar: page-in-chapter (left), book title
+                // (center), clock and battery (right).
+                let footer_rect = rect![bar_rect.min.x, bar_rect.max.y + marker_gap + marker_thickness,
+                                        bar_rect.max.x, strip_rect.max.y];
+                if footer_rect.height() > 0 {
+                    let font = font_from_style(fonts, &MD_SIZE, dpi);
+                    let dy = (footer_rect.height() as i32 - font.x_heights.0 as i32) / 2;
+                    let base_y = footer_rect.max.y - dy;
+                    // Left: page position within the chapter.
+                    let left_plan = font.plan(&self.footer_chapter, None, None);
+                    font.render(fb, BLACK, &left_plan, pt!(footer_rect.min.x, base_y));
+                    let left_end = footer_rect.min.x + left_plan.width;
+                    // Right cluster: clock, separator, battery icon, level.
+                    let time_str = if self.footer_battery.is_some() {
+                        format!("{} \u{00B7} ", self.footer_time)
+                    } else {
+                        self.footer_time.clone()
+                    };
+                    let time_plan = font.plan(&time_str, None, None);
+                    let batt_str = self.footer_battery.map(|c| format!("{:.0}%", c)).unwrap_or_default();
+                    let batt_plan = font.plan(&batt_str, None, None);
+                    let icon_h = font.x_heights.1 as i32;
+                    let border = scale_by_dpi(THICKNESS_MEDIUM, dpi) as i32;
+                    let icon_w = (icon_h as f32 * 1.8) as i32;
+                    let bump_w = border;
+                    let icon_gap = font.em() as i32 / 4;
+                    let icon_cluster = if self.footer_battery.is_some() { icon_w + bump_w + icon_gap } else { 0 };
+                    let right_start = footer_rect.max.x - (time_plan.width + icon_cluster + batt_plan.width);
+                    font.render(fb, BLACK, &time_plan, pt!(right_start, base_y));
+                    let mut cx = right_start + time_plan.width;
+                    if let Some(cap) = self.footer_battery {
+                        let center_y = base_y - icon_h / 2;
+                        let radius = (icon_h / 6).max(1);
+                        let body_rect = rect![pt!(cx, base_y - icon_h), pt!(cx + icon_w, base_y)];
+                        let max_fill = icon_w - 2 * border;
+                        let fill_w = (cap.clamp(0.0, 100.0) / 100.0 * max_fill as f32) as i32;
+                        let fill_end = body_rect.min.x + border + fill_w;
+                        fb.draw_rounded_rectangle_with_border(&body_rect,
+                            &CornerSpec::Uniform(radius),
+                            &BorderSpec { thickness: border as u16, color: BLACK },
+                            &|x, _| if x <= fill_end { BATTERY_FILL } else { WHITE });
+                        let bump_h = icon_h / 2;
+                        let bump_rect = rect![pt!(body_rect.max.x - border, center_y - bump_h / 2),
+                                              pt!(body_rect.max.x - border + bump_w, center_y + bump_h / 2)];
+                        fb.draw_rounded_rectangle_with_border(&bump_rect,
+                            &CornerSpec::East(radius / 2),
+                            &BorderSpec { thickness: border as u16, color: BLACK },
+                            &WHITE);
+                        cx += icon_w + bump_w + icon_gap;
+                    }
+                    font.render(fb, BLACK, &batt_plan, pt!(cx, base_y));
+                    // Center: book title, clipped to the gap between the sides.
+                    let pad = font.em() as i32 / 2;
+                    let avail_min = left_end + pad;
+                    let avail_max = right_start - pad;
+                    if avail_max > avail_min {
+                        let max_width = avail_max - avail_min;
+                        let title = self.info.title();
+                        let title_plan = font.plan(&title, Some(max_width), None);
+                        let tx = avail_min + (max_width - title_plan.width) / 2;
+                        font.render(fb, BLACK, &title_plan, pt!(tx, base_y));
                     }
                 }
             }
