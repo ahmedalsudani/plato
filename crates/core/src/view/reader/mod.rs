@@ -66,13 +66,15 @@ const RECT_DIST_JITTER: f32 = 24.0;
 const ANNOTATION_DRIFT: u8 =  0x44;
 const HIGHLIGHT_DRIFT: u8 =  0x22;
 const MEM_SCHEME: &str = "mem:";
+// Progress bar thickness, in points.
+const PROGRESS_BAR_HEIGHT_PT: f32 = 1.0;
 // Whitespace below the progress bar, leaving room for footer text.
 const PROGRESS_BAR_BOTTOM_MARGIN_PT: f32 = 20.0;
 // Chapter markers: a pair of short black lines hovering above and below the
-// bar. Dimensions in reference pixels at 300 dpi.
-const CHAPTER_MARKER_WIDTH: f32 = 4.0;
-const CHAPTER_MARKER_THICKNESS: f32 = 1.0;
-const CHAPTER_MARKER_GAP: f32 = 1.0;
+// bar. Width, thickness, and gap in points.
+const CHAPTER_MARKER_WIDTH_PT: f32 = 2.0;
+const CHAPTER_MARKER_THICKNESS_PT: f32 = 1.0;
+const CHAPTER_MARKER_GAP_PT: f32 = 0.5;
 
 pub struct Reader {
     id: Id,
@@ -306,7 +308,7 @@ impl Reader {
                                 .unwrap_or(settings.reader.font_size);
 
             let bar_thickness = if settings.reader.progress_bar.enabled && doc.is_reflowable() {
-                scale_by_dpi(settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32
+                pt_to_px(PROGRESS_BAR_HEIGHT_PT, CURRENT_DEVICE.dpi) as i32
             } else {
                 0
             };
@@ -513,7 +515,7 @@ impl Reader {
         let progress_bar_side_margin = doc_margin.left;
         let progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
         let progress_bar_height = if context.settings.reader.progress_bar.enabled {
-            let bar_thickness = scale_by_dpi(context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
+            let bar_thickness = pt_to_px(PROGRESS_BAR_HEIGHT_PT, CURRENT_DEVICE.dpi) as i32;
             bar_thickness + progress_bar_bottom_margin
         } else {
             0
@@ -1173,14 +1175,14 @@ impl Reader {
         self.rect.height().saturating_sub(self.progress_bar_height as u32)
     }
 
-    fn update_chapter_notches(&mut self, context: &Context) {
+    fn update_chapter_notches(&mut self) {
         if self.progress_bar_height == 0 || self.chapter_notches.is_some() {
             return;
         }
 
         let mut notches = Vec::new();
 
-        if context.settings.reader.progress_bar.notches && self.pages_count > 0 {
+        if self.pages_count > 0 {
             let mut doc = self.doc.lock().unwrap();
             if let Some(toc) = self.toc().or_else(|| doc.toc()) {
                 for entry in &toc {
@@ -1200,7 +1202,7 @@ impl Reader {
     }
 
     fn update(&mut self, update_mode: Option<UpdateMode>, hub: &Hub, rq: &mut RenderQueue, context: &Context) {
-        self.update_chapter_notches(context);
+        self.update_chapter_notches();
         self.page_turns += 1;
         let update_mode = update_mode.unwrap_or_else(|| {
             let pair = context.settings.reader.refresh_rate.by_kind
@@ -2555,7 +2557,7 @@ impl Reader {
             self.progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
 
             if self.progress_bar_height > 0 {
-                let bar_thickness = scale_by_dpi(context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
+                let bar_thickness = pt_to_px(PROGRESS_BAR_HEIGHT_PT, CURRENT_DEVICE.dpi) as i32;
                 self.progress_bar_height = bar_thickness + self.progress_bar_bottom_margin;
                 // Halve the text's bottom margin so it sits closer to the progress bar.
                 let text_bottom = doc_margin.bottom / 2;
@@ -4365,8 +4367,8 @@ impl View for Reader {
                 let side_margin = self.progress_bar_side_margin;
                 let bottom_margin = self.progress_bar_bottom_margin;
                 let dpi = CURRENT_DEVICE.dpi;
-                let marker_thickness = scale_by_dpi(CHAPTER_MARKER_THICKNESS, dpi) as i32;
-                let marker_gap = scale_by_dpi(CHAPTER_MARKER_GAP, dpi) as i32;
+                let marker_thickness = pt_to_px(CHAPTER_MARKER_THICKNESS_PT, dpi) as i32;
+                let marker_gap = pt_to_px(CHAPTER_MARKER_GAP_PT, dpi) as i32;
                 let bar_thickness = self.progress_bar_height - bottom_margin;
                 // Push the bar down within the strip so the upper chapter line has room.
                 let bar_top = strip_rect.min.y + marker_thickness + marker_gap;
@@ -4382,7 +4384,7 @@ impl View for Reader {
                 fb.draw_rectangle(&read_rect, BLACK);
                 fb.draw_rectangle(&unread_rect, PROGRESS_EMPTY);
                 if let Some(ref notches) = self.chapter_notches {
-                    let marker_width = scale_by_dpi(CHAPTER_MARKER_WIDTH, dpi) as i32;
+                    let marker_width = pt_to_px(CHAPTER_MARKER_WIDTH_PT, dpi) as i32;
                     let (small_half, big_half) = halves(marker_width);
                     for fraction in notches {
                         let x = (bar_rect.min.x + (bar_rect.width() as f32 * fraction) as i32)

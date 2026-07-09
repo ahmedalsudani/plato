@@ -374,8 +374,6 @@ pub struct ParagraphBreakerSettings {
 #[serde(default, rename_all = "kebab-case")]
 pub struct ProgressBarSettings {
     pub enabled: bool,
-    pub notches: bool,
-    pub height: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -504,8 +502,6 @@ impl Default for ProgressBarSettings {
     fn default() -> Self {
         ProgressBarSettings {
             enabled: true,
-            notches: true,
-            height: 1.0,
         }
     }
 }
