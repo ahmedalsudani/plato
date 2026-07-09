@@ -4372,17 +4372,33 @@ impl View for Reader {
                 let dot_radius = dot_size / 2;
                 // Drop the bar within the strip to leave room for the dots above.
                 let bar_top = strip_rect.min.y + dot_size + dot_gap;
-                let bar_rect = rect![strip_rect.min.x + side_margin, bar_top,
-                                     strip_rect.max.x - side_margin, bar_top + bar_thickness];
+                // Endpoint dots sit where the line ends; the bar is inset from
+                // them by a gap of twice its thickness.
+                let line_min_x = strip_rect.min.x + side_margin;
+                let line_max_x = strip_rect.max.x - side_margin;
+                let end_gap = 2 * bar_thickness;
+                let bar_rect = rect![line_min_x + dot_radius + end_gap, bar_top,
+                                     line_max_x - dot_radius - end_gap, bar_top + bar_thickness];
                 let progress = self.current_page as f32 / self.pages_count.max(1) as f32;
                 let x_split = bar_rect.min.x + (bar_rect.width() as f32 * progress) as i32;
-                // Flat strip: black read portion, grey unread portion.
-                let read_rect = rect![bar_rect.min.x, bar_rect.min.y,
-                                      x_split, bar_rect.max.y];
-                let unread_rect = rect![x_split, bar_rect.min.y,
-                                        bar_rect.max.x, bar_rect.max.y];
-                fb.draw_rectangle(&read_rect, BLACK);
-                fb.draw_rectangle(&unread_rect, PROGRESS_EMPTY);
+                // Rounded pill: grey underneath, black read portion over it.
+                let bar_radius = bar_thickness / 2;
+                fb.draw_rounded_rectangle(&bar_rect, &CornerSpec::Uniform(bar_radius), PROGRESS_EMPTY);
+                if x_split > bar_rect.min.x {
+                    let read_rect = rect![bar_rect.min.x, bar_rect.min.y,
+                                          x_split, bar_rect.max.y];
+                    // Round the right end too once the read portion fills the bar.
+                    let read_corners = if x_split >= bar_rect.max.x {
+                        CornerSpec::Uniform(bar_radius)
+                    } else {
+                        CornerSpec::West(bar_radius)
+                    };
+                    fb.draw_rounded_rectangle(&read_rect, &read_corners, BLACK);
+                }
+                // Endpoint dots at the original line ends.
+                let end_dot_y = bar_top + bar_thickness / 2;
+                fb.draw_disk(pt!(line_min_x, end_dot_y), dot_radius, BLACK);
+                fb.draw_disk(pt!(line_max_x, end_dot_y), dot_radius, BLACK);
                 if let Some(ref notches) = self.chapter_notches {
                     let dot_y = strip_rect.min.y + dot_radius;
                     for fraction in notches {
