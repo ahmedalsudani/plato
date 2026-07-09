@@ -505,7 +505,7 @@ impl Default for ProgressBarSettings {
         ProgressBarSettings {
             enabled: true,
             notches: true,
-            height: 10.0,
+            height: 1.0,
         }
     }
 }

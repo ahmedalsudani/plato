@@ -24,7 +24,7 @@ use crate::framebuffer::{Framebuffer, UpdateMode, Pixmap};
 use crate::view::{View, Event, AppCmd, Hub, Bus, RenderQueue, RenderData};
 use crate::view::{ViewId, Id, ID_FEEDER, EntryKind, EntryId, SliderId};
 use crate::view::{SMALL_BAR_HEIGHT, BIG_BAR_HEIGHT, THICKNESS_MEDIUM};
-use crate::unit::{scale_by_dpi, mm_to_px};
+use crate::unit::{scale_by_dpi, mm_to_px, pt_to_px};
 use crate::device::CURRENT_DEVICE;
 use crate::helpers::AsciiExtension;
 use crate::font::Fonts;
@@ -58,7 +58,7 @@ use crate::metadata::{Margin, CroppingMargins, make_query};
 use crate::metadata::{DEFAULT_CONTRAST_EXPONENT, DEFAULT_CONTRAST_GRAY};
 use crate::geom::{Point, Vec2, Rectangle, Boundary, CornerSpec, BorderSpec, Edge};
 use crate::geom::{Dir, DiagDir, CycleDir, LinearDir, Axis, Region, halves};
-use crate::color::{BLACK, WHITE, PROGRESS_FULL, PROGRESS_EMPTY};
+use crate::color::{BLACK, WHITE, PROGRESS_EMPTY};
 use crate::context::Context;
 
 const HISTORY_SIZE: usize = 32;
@@ -66,6 +66,13 @@ const RECT_DIST_JITTER: f32 = 24.0;
 const ANNOTATION_DRIFT: u8 =  0x44;
 const HIGHLIGHT_DRIFT: u8 =  0x22;
 const MEM_SCHEME: &str = "mem:";
+// Whitespace below the progress bar, leaving room for footer text.
+const PROGRESS_BAR_BOTTOM_MARGIN_PT: f32 = 20.0;
+// Chapter markers: a pair of short black lines hovering above and below the
+// bar. Dimensions in reference pixels at 300 dpi.
+const CHAPTER_MARKER_WIDTH: f32 = 4.0;
+const CHAPTER_MARKER_THICKNESS: f32 = 1.0;
+const CHAPTER_MARKER_GAP: f32 = 1.0;
 
 pub struct Reader {
     id: Id,
@@ -256,7 +263,7 @@ impl Reader {
                                 .unwrap_or(settings.reader.font_size);
 
             let bar_thickness = if settings.reader.progress_bar.enabled && doc.is_reflowable() {
-                scale_by_dpi(1.5 * settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32
+                scale_by_dpi(settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32
             } else {
                 0
             };
@@ -273,7 +280,7 @@ impl Reader {
 
             let doc_margin = doc.margin();
             let progress_bar_side_margin = doc_margin.left;
-            let progress_bar_bottom_margin = doc_margin.bottom / 2;
+            let progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
 
             let progress_bar_height = if bar_thickness > 0 {
                 bar_thickness + progress_bar_bottom_margin
@@ -283,7 +290,8 @@ impl Reader {
 
             if progress_bar_height > 0 {
                 // Halve the text's bottom margin so it sits closer to the progress bar.
-                doc.set_margin(&Edge { bottom: progress_bar_bottom_margin, ..doc_margin });
+                let text_bottom = doc_margin.bottom / 2;
+                doc.set_margin(&Edge { bottom: text_bottom, ..doc_margin });
             }
 
             doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
@@ -452,16 +460,17 @@ impl Reader {
         let font_size = context.settings.reader.font_size;
         let doc_margin = doc.margin();
         let progress_bar_side_margin = doc_margin.left;
-        let progress_bar_bottom_margin = doc_margin.bottom / 2;
+        let progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
         let progress_bar_height = if context.settings.reader.progress_bar.enabled {
-            let bar_thickness = scale_by_dpi(1.5 * context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
+            let bar_thickness = scale_by_dpi(context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
             bar_thickness + progress_bar_bottom_margin
         } else {
             0
         };
         if progress_bar_height > 0 {
             // Halve the text's bottom margin so it sits closer to the progress bar.
-            doc.set_margin(&Edge { bottom: progress_bar_bottom_margin, ..doc_margin });
+            let text_bottom = doc_margin.bottom / 2;
+            doc.set_margin(&Edge { bottom: text_bottom, ..doc_margin });
         }
         doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
         let pages_count = doc.pages_count();
@@ -2476,13 +2485,14 @@ impl Reader {
             doc.set_margin_width(width);
             let doc_margin = doc.margin();
             self.progress_bar_side_margin = doc_margin.left;
-            self.progress_bar_bottom_margin = doc_margin.bottom / 2;
+            self.progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
 
             if self.progress_bar_height > 0 {
-                let bar_thickness = scale_by_dpi(1.5 * context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
+                let bar_thickness = scale_by_dpi(context.settings.reader.progress_bar.height, CURRENT_DEVICE.dpi) as i32;
                 self.progress_bar_height = bar_thickness + self.progress_bar_bottom_margin;
                 // Halve the text's bottom margin so it sits closer to the progress bar.
-                doc.set_margin(&Edge { bottom: self.progress_bar_bottom_margin, ..doc_margin });
+                let text_bottom = doc_margin.bottom / 2;
+                doc.set_margin(&Edge { bottom: text_bottom, ..doc_margin });
                 let (display_width, display_height) = context.display.dims;
                 let font_size = self.info.reader.as_ref().and_then(|r| r.font_size)
                                     .unwrap_or(context.settings.reader.font_size);
@@ -4273,27 +4283,36 @@ impl View for Reader {
                 fb.draw_rectangle(&strip_rect, WHITE);
                 let side_margin = self.progress_bar_side_margin;
                 let bottom_margin = self.progress_bar_bottom_margin;
-                let bar_rect = rect![strip_rect.min.x + side_margin, strip_rect.min.y,
-                                     strip_rect.max.x - side_margin, strip_rect.max.y - bottom_margin];
-                let radius = bar_rect.height() as i32 / 2;
-                let border_thickness = 1;
+                let dpi = CURRENT_DEVICE.dpi;
+                let marker_thickness = scale_by_dpi(CHAPTER_MARKER_THICKNESS, dpi) as i32;
+                let marker_gap = scale_by_dpi(CHAPTER_MARKER_GAP, dpi) as i32;
+                let bar_thickness = self.progress_bar_height - bottom_margin;
+                // Push the bar down within the strip so the upper chapter line has room.
+                let bar_top = strip_rect.min.y + marker_thickness + marker_gap;
+                let bar_rect = rect![strip_rect.min.x + side_margin, bar_top,
+                                     strip_rect.max.x - side_margin, bar_top + bar_thickness];
                 let progress = self.current_page as f32 / self.pages_count.max(1) as f32;
                 let x_split = bar_rect.min.x + (bar_rect.width() as f32 * progress) as i32;
-                fb.draw_rounded_rectangle_with_border(&bar_rect,
-                                                      &CornerSpec::Uniform(radius),
-                                                      &BorderSpec { thickness: border_thickness as u16, color: BLACK },
-                                                      &|x: i32, _y: i32| if x < x_split { PROGRESS_FULL } else { PROGRESS_EMPTY });
+                // Flat strip: black read portion, grey unread portion.
+                let read_rect = rect![bar_rect.min.x, bar_rect.min.y,
+                                      x_split, bar_rect.max.y];
+                let unread_rect = rect![x_split, bar_rect.min.y,
+                                        bar_rect.max.x, bar_rect.max.y];
+                fb.draw_rectangle(&read_rect, BLACK);
+                fb.draw_rectangle(&unread_rect, PROGRESS_EMPTY);
                 if let Some(ref notches) = self.chapter_notches {
-                    let thickness = 2 * scale_by_dpi(THICKNESS_MEDIUM, CURRENT_DEVICE.dpi) as i32;
-                    let (small_half, big_half) = halves(thickness);
+                    let marker_width = scale_by_dpi(CHAPTER_MARKER_WIDTH, dpi) as i32;
+                    let (small_half, big_half) = halves(marker_width);
                     for fraction in notches {
                         let x = (bar_rect.min.x + (bar_rect.width() as f32 * fraction) as i32)
-                                .clamp(bar_rect.min.x + radius, bar_rect.max.x - radius);
-                        let notch_rect = rect![pt!(x - small_half, bar_rect.min.y + border_thickness),
-                                               pt!(x + big_half, bar_rect.max.y - border_thickness)];
-                        fb.draw_rounded_rectangle(&notch_rect,
-                                                  &CornerSpec::Uniform(notch_rect.width() as i32 / 2),
-                                                  BLACK);
+                                .clamp(bar_rect.min.x + small_half, bar_rect.max.x - big_half);
+                        // A pair of black lines hovering above and below the bar.
+                        let above_rect = rect![pt!(x - small_half, bar_rect.min.y - marker_gap - marker_thickness),
+                                               pt!(x + big_half, bar_rect.min.y - marker_gap)];
+                        let below_rect = rect![pt!(x - small_half, bar_rect.max.y + marker_gap),
+                                               pt!(x + big_half, bar_rect.max.y + marker_gap + marker_thickness)];
+                        fb.draw_rectangle(&above_rect, BLACK);
+                        fb.draw_rectangle(&below_rect, BLACK);
                     }
                 }
             }
