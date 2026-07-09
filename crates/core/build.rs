@@ -24,6 +24,9 @@ fn main() {
             _ => panic!("Unsupported platform: {}.", target_os),
         }
 
+        // Dev symlinks (libmupdf.so, libSDL2.so, ...) for the host build,
+        // pointing at the versioned system libraries. See scripts/host-libs.sh.
+        println!("cargo:rustc-link-search=target/host-libs");
         println!("cargo:rustc-link-lib=mupdf-third");
     }
 
