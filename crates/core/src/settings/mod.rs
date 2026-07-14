@@ -395,6 +395,7 @@ pub enum FinishedAction {
 pub enum SouthEastCornerAction {
     NextPage,
     GoToPage,
+    ToggleProgressBar,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]

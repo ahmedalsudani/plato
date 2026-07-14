@@ -91,7 +91,7 @@ max-trash-size = 33_554_432
 # Possible values: "notify", "close".
 finished = "close"
 # The action triggered when tapping the south-east corner.
-# Possible values: "go-to-page", "next-page".
+# Possible values: "go-to-page", "next-page", "toggle-progress-bar".
 south-east-corner = "go-to-page"
 # The action triggered when making bottom right corner gesture.
 # Possible values: "toggle-dithered", "toggle-inverted".
@@ -138,6 +138,10 @@ ignore-document-css = false
 # The file extensions of the files that will automatically be dithered
 # when opened for the first time.
 dithered-kinds = ["cbz", "jpg", "png", "jpeg"]
+
+# The always-visible progress bar drawn below the text of reflowable documents.
+[reader.progress-bar]
+enabled = true
 
 [reader.paragraph-breaker]
 # The penalty for hyphenated lines. The maximum value is 10_000.

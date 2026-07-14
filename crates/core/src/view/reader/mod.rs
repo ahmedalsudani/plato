@@ -2596,6 +2596,62 @@ impl Reader {
         self.update_bottom_bar(rq);
     }
 
+    fn toggle_progress_bar(&mut self, hub: &Hub, rq: &mut RenderQueue, context: &mut Context) {
+        if Arc::strong_count(&self.doc) > 1 {
+            return;
+        }
+
+        let enabled = !context.settings.reader.progress_bar.enabled;
+        context.settings.reader.progress_bar.enabled = enabled;
+
+        if !self.reflowable {
+            return;
+        }
+
+        {
+            let mut doc = self.doc.lock().unwrap();
+            // Restore the uniform bottom margin that the progress bar halved.
+            let doc_margin = doc.margin();
+            doc.set_margin(&Edge { bottom: doc_margin.left, ..doc_margin });
+            let doc_margin = doc.margin();
+            self.progress_bar_side_margin = doc_margin.left;
+            self.progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
+
+            if enabled {
+                let bar_thickness = pt_to_px(PROGRESS_BAR_HEIGHT_PT, CURRENT_DEVICE.dpi) as i32;
+                self.progress_bar_height = bar_thickness + self.progress_bar_bottom_margin;
+                // Halve the text's bottom margin so it sits closer to the progress bar.
+                let text_bottom = doc_margin.bottom / 2;
+                doc.set_margin(&Edge { bottom: text_bottom, ..doc_margin });
+            } else {
+                self.progress_bar_height = 0;
+            }
+
+            let (display_width, display_height) = context.display.dims;
+            let font_size = self.info.reader.as_ref().and_then(|r| r.font_size)
+                                .unwrap_or(context.settings.reader.font_size);
+            doc.layout(display_width, display_height.saturating_sub(self.progress_bar_height as u32),
+                       font_size, CURRENT_DEVICE.dpi);
+
+            if self.synthetic {
+                let current_page = self.current_page.min(doc.pages_count() - 1);
+                if let Some(location) = doc.resolve_location(Location::Exact(current_page)) {
+                    self.current_page = location;
+                }
+            } else {
+                self.pages_count = doc.pages_count();
+                self.current_page = self.current_page.min(self.pages_count - 1);
+            }
+        }
+
+        self.chapter_notches = None;
+        self.text.clear();
+        self.cache.clear();
+        self.update(Some(UpdateMode::Full), hub, rq, context);
+        self.update_tool_bar(rq, context);
+        self.update_bottom_bar(rq);
+    }
+
     fn toggle_bookmark(&mut self, rq: &mut RenderQueue) {
         if let Some(ref mut r) = self.info.reader {
             if !r.bookmarks.insert(self.current_page) {
@@ -3450,6 +3506,9 @@ impl View for Reader {
                                         },
                                         SouthEastCornerAction::NextPage => {
                                             self.go_to_neighbor(CycleDir::Next, hub, rq, context);
+                                        },
+                                        SouthEastCornerAction::ToggleProgressBar => {
+                                            self.toggle_progress_bar(hub, rq, context);
                                         },
                                     }
                                 } else {
