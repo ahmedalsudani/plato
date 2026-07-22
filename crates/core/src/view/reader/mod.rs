@@ -331,8 +331,8 @@ impl Reader {
             };
 
             if progress_bar_height > 0 {
-                // Halve the text's bottom margin so it sits closer to the progress bar.
-                let text_bottom = doc_margin.bottom / 2;
+                // Quarter the text's bottom margin so it sits closer to the progress bar.
+                let text_bottom = doc_margin.bottom / 4;
                 doc.set_margin(&Edge { bottom: text_bottom, ..doc_margin });
             }
 
@@ -518,8 +518,8 @@ impl Reader {
             0
         };
         if progress_bar_height > 0 {
-            // Halve the text's bottom margin so it sits closer to the progress bar.
-            let text_bottom = doc_margin.bottom / 2;
+            // Quarter the text's bottom margin so it sits closer to the progress bar.
+            let text_bottom = doc_margin.bottom / 4;
             doc.set_margin(&Edge { bottom: text_bottom, ..doc_margin });
         }
         doc.layout(width, height.saturating_sub(progress_bar_height as u32), font_size, CURRENT_DEVICE.dpi);
@@ -2556,8 +2556,8 @@ impl Reader {
             if self.progress_bar_height > 0 {
                 let bar_thickness = pt_to_px(PROGRESS_BAR_HEIGHT_PT, CURRENT_DEVICE.dpi) as i32;
                 self.progress_bar_height = bar_thickness + self.progress_bar_bottom_margin;
-                // Halve the text's bottom margin so it sits closer to the progress bar.
-                let text_bottom = doc_margin.bottom / 2;
+                // Quarter the text's bottom margin so it sits closer to the progress bar.
+                let text_bottom = doc_margin.bottom / 4;
                 doc.set_margin(&Edge { bottom: text_bottom, ..doc_margin });
                 let (display_width, display_height) = context.display.dims;
                 let font_size = self.info.reader.as_ref().and_then(|r| r.font_size)
