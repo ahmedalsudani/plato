@@ -2844,6 +2844,81 @@ impl Reader {
         self.selection.as_ref().and_then(|sel| self.text_excerpt([sel.start, sel.end]))
     }
 
+    fn nearest_link(&self, center: Point) -> Option<BoundedText> {
+        let mut nearest_link = None;
+        let mut dmin = u32::MAX;
+        let dmax = (scale_by_dpi(RECT_DIST_JITTER, CURRENT_DEVICE.dpi) as i32).pow(2) as u32;
+
+        for chunk in &self.chunks {
+            let (links, _) = self.doc.lock().ok()
+                                 .and_then(|mut doc| doc.links(Location::Exact(chunk.location)))
+                                 .unwrap_or((Vec::new(), 0));
+            for link in links {
+                let rect = (link.rect * chunk.scale).to_rect() - chunk.frame.min + chunk.position;
+                let d = center.rdist2(&rect);
+                if d < dmax && d < dmin {
+                    dmin = d;
+                    nearest_link = Some(link.clone());
+                }
+            }
+        }
+
+        nearest_link
+    }
+
+    fn follow_link(&mut self, link: &BoundedText, hub: &Hub, rq: &mut RenderQueue, context: &mut Context) {
+        let pdf_page = Regex::new(r"^#page=(\d+).*$").unwrap();
+        let djvu_page = Regex::new(r"^#([+-])?(\d+)$").unwrap();
+        let toc_page = Regex::new(r"^@(.+)$").unwrap();
+        if let Some(caps) = toc_page.captures(&link.text) {
+            let loc_opt = if caps[1].chars().all(|c| c.is_digit(10)) {
+                caps[1].parse::<usize>()
+                       .map(Location::Exact)
+                       .ok()
+            } else {
+                Some(Location::Uri(caps[1].to_string()))
+            };
+            if let Some(location) = loc_opt {
+                self.quit(context);
+                hub.send(Event::Back).ok();
+                hub.send(Event::GoToLocation(location)).ok();
+            }
+        } else if let Some(caps) = pdf_page.captures(&link.text) {
+            if let Ok(index) = caps[1].parse::<usize>() {
+                self.go_to_page(index.saturating_sub(1), true, hub, rq, context);
+            }
+        } else if let Some(caps) = djvu_page.captures(&link.text) {
+            if let Ok(mut index) = caps[2].parse::<usize>() {
+                let prefix = caps.get(1).map(|m| m.as_str());
+                match prefix {
+                    Some("-") => index = self.current_page.saturating_sub(index),
+                    Some("+") => index += self.current_page,
+                    _ => index = index.saturating_sub(1),
+                }
+                self.go_to_page(index, true, hub, rq, context);
+            }
+        } else {
+            let mut doc = self.doc.lock().unwrap();
+            let loc = Location::LocalUri(self.current_page, link.text.clone());
+            if let Some(location) = doc.resolve_location(loc) {
+                hub.send(Event::GoTo(location)).ok();
+            } else {
+                if link.text.starts_with("https:") || link.text.starts_with("http:") {
+                    if context.settings.external_urls_queue.is_some() {
+                        let dialog = Dialog::new(ViewId::ExternalUrlDialog,
+                                                 Some(Event::QueueExternalUrl(link.text.clone())),
+                                                 format!("Queue {} for download?", link.text),
+                                                 context);
+                        rq.add(RenderData::new(dialog.id(), *dialog.rect(), UpdateMode::Gui));
+                        self.children.push(Box::new(dialog) as Box<dyn View>);
+                    }
+                } else {
+                    eprintln!("Can't resolve URI: {}.", link.text);
+                }
+            }
+        }
+    }
+
     fn text_rect(&self, sel: [TextLocation; 2]) -> Option<Rectangle> {
         let [start, end] = sel;
         let mut result: Option<Rectangle> = None;
@@ -3391,78 +3466,6 @@ impl View for Reader {
                     return true;
                 }
 
-                let mut nearest_link = None;
-                let mut dmin = u32::MAX;
-                let dmax = (scale_by_dpi(RECT_DIST_JITTER, CURRENT_DEVICE.dpi) as i32).pow(2) as u32;
-
-                for chunk in &self.chunks {
-                    let (links, _) = self.doc.lock().ok()
-                                         .and_then(|mut doc| doc.links(Location::Exact(chunk.location)))
-                                         .unwrap_or((Vec::new(), 0));
-                    for link in links {
-                        let rect = (link.rect * chunk.scale).to_rect() - chunk.frame.min + chunk.position;
-                        let d = center.rdist2(&rect);
-                        if d < dmax && d < dmin {
-                            dmin = d;
-                            nearest_link = Some(link.clone());
-                        }
-                    }
-                }
-
-                if let Some(link) = nearest_link.take() {
-                    let pdf_page = Regex::new(r"^#page=(\d+).*$").unwrap();
-                    let djvu_page = Regex::new(r"^#([+-])?(\d+)$").unwrap();
-                    let toc_page = Regex::new(r"^@(.+)$").unwrap();
-                    if let Some(caps) = toc_page.captures(&link.text) {
-                        let loc_opt = if caps[1].chars().all(|c| c.is_digit(10)) {
-                            caps[1].parse::<usize>()
-                                   .map(Location::Exact)
-                                   .ok()
-                        } else {
-                            Some(Location::Uri(caps[1].to_string()))
-                        };
-                        if let Some(location) = loc_opt {
-                            self.quit(context);
-                            hub.send(Event::Back).ok();
-                            hub.send(Event::GoToLocation(location)).ok();
-                        }
-                    } else if let Some(caps) = pdf_page.captures(&link.text) {
-                        if let Ok(index) = caps[1].parse::<usize>() {
-                            self.go_to_page(index.saturating_sub(1), true, hub, rq, context);
-                        }
-                    } else if let Some(caps) = djvu_page.captures(&link.text) {
-                        if let Ok(mut index) = caps[2].parse::<usize>() {
-                            let prefix = caps.get(1).map(|m| m.as_str());
-                            match prefix {
-                                Some("-") => index = self.current_page.saturating_sub(index),
-                                Some("+") => index += self.current_page,
-                                _ => index = index.saturating_sub(1),
-                            }
-                            self.go_to_page(index, true, hub, rq, context);
-                        }
-                    } else {
-                        let mut doc = self.doc.lock().unwrap();
-                        let loc = Location::LocalUri(self.current_page, link.text.clone());
-                        if let Some(location) = doc.resolve_location(loc) {
-                            hub.send(Event::GoTo(location)).ok();
-                        } else {
-                            if link.text.starts_with("https:") || link.text.starts_with("http:") {
-                                if context.settings.external_urls_queue.is_some() {
-                                    let dialog = Dialog::new(ViewId::ExternalUrlDialog,
-                                                             Some(Event::QueueExternalUrl(link.text.clone())),
-                                                             format!("Queue {} for download?", link.text),
-                                                             context);
-                                    rq.add(RenderData::new(dialog.id(), *dialog.rect(), UpdateMode::Gui));
-                                    self.children.push(Box::new(dialog) as Box<dyn View>);
-                                }
-                            } else {
-                                eprintln!("Can't resolve URI: {}.", link.text);
-                            }
-                        }
-                    }
-                    return true;
-                }
-
                 if let ZoomMode::Custom(_) = self.view_port.zoom_mode {
                     let dx = self.rect.width() as i32 - 2 * self.view_port.margin_width;
                     let dy = self.rect.height() as i32 - 2 * self.view_port.margin_width;
@@ -3606,6 +3609,12 @@ impl View for Reader {
                         let radius = scale_by_dpi(24.0, CURRENT_DEVICE.dpi) as i32;
                         self.toggle_selection_menu(Rectangle::from_disk(center, radius), Some(true), rq, context);
                     }
+                    return true;
+                }
+
+                // Links are followed by holding them: a plain tap acts as if no link were there.
+                if let Some(link) = self.nearest_link(center) {
+                    self.follow_link(&link, hub, rq, context);
                     return true;
                 }
 

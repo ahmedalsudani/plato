@@ -97,6 +97,8 @@ Tap gestures by region:
 
 In normal mode, while the top and bottom bars are visible, tapping or swiping on the page area dismisses them instead of triggering the corresponding action.
 
+To follow a link, tap and hold it. A plain tap on a link acts like a tap anywhere else on the page.
+
 Swipe west/east to go to the next/previous page.
 
 Swipe north/south to scroll the page stream when the zoom mode is fit-to-width. If the scroll mode is set to *page*, the scrolling is limited to the current page.
