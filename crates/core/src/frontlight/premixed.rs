@@ -20,6 +20,9 @@ pub struct PremixedFrontlight {
     warmth: f32,
     white: File,
     orange: File,
+    // The values that were last written to the interface.
+    written_white: Option<i16>,
+    written_orange: Option<i16>,
 }
 
 impl PremixedFrontlight {
@@ -33,14 +36,19 @@ impl PremixedFrontlight {
             FRONTLIGHT_ORANGE_A
         };
         let orange = OpenOptions::new().write(true).open(orange_path)?;
-        Ok(PremixedFrontlight { intensity, warmth, white, orange })
+        Ok(PremixedFrontlight { intensity, warmth, white, orange,
+                                written_white: None, written_orange: None })
     }
 }
 
 impl Frontlight for PremixedFrontlight {
     fn set_intensity(&mut self, intensity: f32) {
         let white = intensity.round() as i16;
-        write!(self.white, "{}", white).unwrap();
+        // Writing to this file is slow, hence we avoid the redundant writes.
+        if self.written_white != Some(white) {
+            write!(self.white, "{}", white).unwrap();
+            self.written_white = Some(white);
+        }
         self.intensity = intensity;
     }
 
@@ -49,7 +57,10 @@ impl Frontlight for PremixedFrontlight {
         if CURRENT_DEVICE.mark() != 8 {
             orange = 10 - orange;
         }
-        write!(self.orange, "{}", orange).unwrap();
+        if self.written_orange != Some(orange) {
+            write!(self.orange, "{}", orange).unwrap();
+            self.written_orange = Some(orange);
+        }
         self.warmth = warmth;
     }
 

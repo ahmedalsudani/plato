@@ -84,10 +84,14 @@ impl View for Slider {
                         true
                     },
                     FingerStatus::Motion if self.active && position.x != self.last_x => {
+                        let previous_value = self.value;
                         self.update_value(position.x);
-                        rq.add(RenderData::no_wait(self.id, self.rect, UpdateMode::FastMono));
-                        bus.push_back(Event::Slider(self.slider_id, self.value, status));
                         self.last_x = position.x;
+                        // Moving the finger within a step doesn't change anything.
+                        if self.value != previous_value {
+                            rq.add(RenderData::no_wait(self.id, self.rect, UpdateMode::FastMono));
+                            bus.push_back(Event::Slider(self.slider_id, self.value, status));
+                        }
                         true
                     },
                     FingerStatus::Up if self.active => {
@@ -176,5 +180,30 @@ impl View for Slider {
 
     fn id(&self) -> Id {
         self.id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slider_value_is_stable_within_a_step() {
+        let rect = rect![0, 0, 800, 100];
+        let mut slider = Slider::with_step(rect, SliderId::LightIntensity, 0.0, 0.0, 100.0, 1.0);
+        let mut changes = 0;
+        let mut value = slider.value;
+        for x in rect.min.x..rect.max.x {
+            slider.update_value(x);
+            if slider.value != value {
+                changes += 1;
+                value = slider.value;
+            }
+        }
+        // A one pixel move rarely changes the value: most of the motion events
+        // that reach the slider don't have to be broadcast.
+        assert!(changes > 0);
+        assert!(changes < rect.width() as usize / 2,
+                "{} changes for {} pixels", changes, rect.width());
     }
 }

@@ -251,6 +251,9 @@ pub fn render(view: &dyn View, wait: bool, ids: &FxHashMap<Id, Vec<Rectangle>>, 
 
 #[inline]
 pub fn process_render_queue(view: &dyn View, rq: &mut RenderQueue, context: &mut Context, updating: &mut Vec<UpdateData>) {
+    // Updates that we didn't have to wait for are never removed from `updating` otherwise.
+    updating.retain(|update| !update.has_completed());
+
     for ((mode, wait), pairs) in rq.drain() {
         let mut ids = FxHashMap::default();
         let mut rects = Vec::new();

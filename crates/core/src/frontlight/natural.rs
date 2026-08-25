@@ -56,6 +56,9 @@ pub struct NaturalFrontlight {
     values: FxHashMap<LightColor, File>,
     powers: FxHashMap<LightColor, File>,
     maxima: FxHashMap<LightColor, i16>,
+    // The values and powers that were last written to the interface.
+    written_values: FxHashMap<LightColor, i16>,
+    written_powers: FxHashMap<LightColor, i16>,
 }
 
 impl NaturalFrontlight {
@@ -81,21 +84,30 @@ impl NaturalFrontlight {
             maxima,
             values,
             powers,
+            written_values: FxHashMap::default(),
+            written_powers: FxHashMap::default(),
         })
     }
 
     fn set(&mut self, c: LightColor, percent: f32) {
         let max_value = self.maxima[&c] as f32;
         let value = (percent.clamp(0.0, 100.0) / 100.0 * max_value) as i16;
-        let mut file = &self.values[&c];
-        write!(file, "{}", value).unwrap();
-        let mut file = &self.powers[&c];
+        // Writing to these files is slow, hence we avoid the redundant writes.
+        if self.written_values.get(&c) != Some(&value) {
+            let mut file = &self.values[&c];
+            write!(file, "{}", value).unwrap();
+            self.written_values.insert(c, value);
+        }
         let power = if value > 0 {
             FRONTLIGHT_POWER_ON
         } else {
             FRONTLIGHT_POWER_OFF
         };
-        write!(file, "{}", power).unwrap();
+        if self.written_powers.get(&c) != Some(&power) {
+            let mut file = &self.powers[&c];
+            write!(file, "{}", power).unwrap();
+            self.written_powers.insert(c, power);
+        }
     }
 
     fn update(&mut self, intensity: f32, warmth: f32) {

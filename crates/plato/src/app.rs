@@ -21,7 +21,7 @@ use plato_core::view::sketch::Sketch;
 use plato_core::view::touch_events::TouchEvents;
 use plato_core::view::rotation_values::RotationValues;
 use plato_core::document::sys_info_as_html;
-use plato_core::input::{DeviceEvent, PowerSource, ButtonCode, ButtonStatus, VAL_RELEASE, VAL_PRESS};
+use plato_core::input::{DeviceEvent, FingerStatus, PowerSource, ButtonCode, ButtonStatus, VAL_RELEASE, VAL_PRESS};
 use plato_core::input::{raw_events, device_events, usb_events, display_rotate_event, button_scheme_event};
 use plato_core::gesture::{GestureEvent, gesture_events};
 use plato_core::helpers::{load_toml, save_toml};
@@ -64,6 +64,9 @@ const BATTERY_REFRESH_INTERVAL: Duration = Duration::from_secs(299);
 const AUTO_SUSPEND_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const SUSPEND_WAIT_DELAY: Duration = Duration::from_secs(15);
 const PREPARE_SUSPEND_WAIT_DELAY: Duration = Duration::from_secs(3);
+
+// Maximum number of pending events scanned when coalescing motion events.
+const COALESCE_SCAN_LIMIT: usize = 256;
 
 struct Task {
     id: TaskId,
@@ -141,6 +144,40 @@ fn schedule_task(id: TaskId, event: Event, delay: Duration, hub: &Sender<Event>,
             hub2.send(event).ok();
         }
     });
+}
+
+// The touch screen emits motion events at about 100 Hz. Handling all of them can be more
+// expensive than the interval that separates them, in which case a backlog builds up and the
+// interface lags behind the finger. Given that only the latest position matters, we drop the
+// stale motion events of the finger given in `evt` and return the most recent one. The first
+// event that isn't such a motion event is saved in `deferred`: it will be handled next.
+fn coalesce_motion(evt: Event, rx: &Receiver<Event>, deferred: &mut VecDeque<Event>) -> Event {
+    let id = match evt {
+        Event::Device(DeviceEvent::Finger { status: FingerStatus::Motion, id, .. }) => id,
+        _ => return evt,
+    };
+
+    let mut latest = evt;
+
+    for _ in 0..COALESCE_SCAN_LIMIT {
+        match rx.try_recv() {
+            Ok(next) => {
+                match next {
+                    Event::Device(DeviceEvent::Finger { status: FingerStatus::Motion,
+                                                        id: next_id, .. }) if next_id == id => {
+                        latest = next;
+                    },
+                    _ => {
+                        deferred.push_back(next);
+                        break;
+                    },
+                }
+            },
+            Err(..) => break,
+        }
+    }
+
+    latest
 }
 
 fn join_net_enable(net_enable: &mut Option<thread::JoinHandle<()>>) {
@@ -380,7 +417,24 @@ pub fn run() -> Result<(), Error> {
                   BATTERY_REFRESH_INTERVAL, &tx, &mut tasks);
     tx.send(Event::WakeUp).ok();
 
-    while let Ok(evt) = rx.recv() {
+    let mut deferred: VecDeque<Event> = VecDeque::new();
+
+    loop {
+        let evt = match deferred.pop_front() {
+            Some(evt) => evt,
+            None => match rx.recv() {
+                Ok(evt) => evt,
+                Err(..) => break,
+            },
+        };
+
+        // The sketching app needs every single motion event.
+        let evt = if view.is::<Sketch>() {
+            evt
+        } else {
+            coalesce_motion(evt, &rx, &mut deferred)
+        };
+
         match evt {
             Event::Device(de) => {
                 match de {
@@ -1067,4 +1121,115 @@ pub fn run() -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::sync::mpsc;
+    use plato_core::geom::Point;
+    use plato_core::input::{DeviceEvent, FingerStatus};
+    use plato_core::view::Event;
+    use super::{coalesce_motion, COALESCE_SCAN_LIMIT};
+
+    fn finger(status: FingerStatus, id: i32, x: i32) -> Event {
+        Event::Device(DeviceEvent::Finger {
+            id,
+            time: 0.0,
+            status,
+            position: Point { x, y: 0 },
+        })
+    }
+
+    fn position_x(evt: &Event) -> i32 {
+        match *evt {
+            Event::Device(DeviceEvent::Finger { position, .. }) => position.x,
+            _ => panic!("not a finger event: {:?}", evt),
+        }
+    }
+
+    #[test]
+    fn test_coalesce_motion_keeps_the_latest() {
+        let (tx, rx) = mpsc::channel();
+        for x in 1..=3 {
+            tx.send(finger(FingerStatus::Motion, 0, x)).unwrap();
+        }
+        tx.send(finger(FingerStatus::Up, 0, 3)).unwrap();
+
+        let mut deferred = VecDeque::new();
+        let evt = rx.recv().unwrap();
+        let evt = coalesce_motion(evt, &rx, &mut deferred);
+
+        assert!(matches!(evt, Event::Device(DeviceEvent::Finger { status: FingerStatus::Motion, .. })));
+        assert_eq!(position_x(&evt), 3);
+        assert_eq!(deferred.len(), 1);
+        assert!(matches!(deferred[0], Event::Device(DeviceEvent::Finger { status: FingerStatus::Up, .. })));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_coalesce_motion_defers_other_events() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(finger(FingerStatus::Motion, 0, 1)).unwrap();
+        tx.send(finger(FingerStatus::Down, 1, 7)).unwrap();
+        tx.send(finger(FingerStatus::Motion, 0, 2)).unwrap();
+
+        let mut deferred = VecDeque::new();
+        let evt = rx.recv().unwrap();
+        let evt = coalesce_motion(evt, &rx, &mut deferred);
+
+        assert_eq!(position_x(&evt), 1);
+        assert_eq!(deferred.len(), 1);
+        assert!(matches!(deferred[0], Event::Device(DeviceEvent::Finger { status: FingerStatus::Down, id: 1, .. })));
+        // The motion event that follows is still in the channel.
+        assert_eq!(position_x(&rx.try_recv().unwrap()), 2);
+    }
+
+    #[test]
+    fn test_coalesce_motion_ignores_other_fingers() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(finger(FingerStatus::Motion, 0, 1)).unwrap();
+        tx.send(finger(FingerStatus::Motion, 1, 5)).unwrap();
+        tx.send(finger(FingerStatus::Motion, 0, 2)).unwrap();
+
+        let mut deferred = VecDeque::new();
+        let evt = rx.recv().unwrap();
+        let evt = coalesce_motion(evt, &rx, &mut deferred);
+
+        assert_eq!(position_x(&evt), 1);
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(position_x(&deferred[0]), 5);
+    }
+
+    #[test]
+    fn test_coalesce_motion_is_bounded() {
+        let (tx, rx) = mpsc::channel();
+        let count = COALESCE_SCAN_LIMIT + 50;
+        for x in 1..=count as i32 {
+            tx.send(finger(FingerStatus::Motion, 0, x)).unwrap();
+        }
+
+        let mut deferred = VecDeque::new();
+        let evt = rx.recv().unwrap();
+        let evt = coalesce_motion(evt, &rx, &mut deferred);
+
+        assert_eq!(position_x(&evt), 1 + COALESCE_SCAN_LIMIT as i32);
+        assert!(deferred.is_empty());
+        assert_eq!(position_x(&rx.try_recv().unwrap()), 2 + COALESCE_SCAN_LIMIT as i32);
+    }
+
+    #[test]
+    fn test_coalesce_motion_passes_other_events_through() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(finger(FingerStatus::Down, 0, 1)).unwrap();
+        tx.send(finger(FingerStatus::Motion, 0, 2)).unwrap();
+
+        let mut deferred = VecDeque::new();
+        let evt = rx.recv().unwrap();
+        let evt = coalesce_motion(evt, &rx, &mut deferred);
+
+        assert!(matches!(evt, Event::Device(DeviceEvent::Finger { status: FingerStatus::Down, .. })));
+        assert!(deferred.is_empty());
+        assert_eq!(position_x(&rx.try_recv().unwrap()), 2);
+    }
 }
