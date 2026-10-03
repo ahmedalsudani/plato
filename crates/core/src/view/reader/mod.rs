@@ -194,6 +194,17 @@ impl Default for Contrast {
     }
 }
 
+// The progress bar's side margins match the book margin. Documents that don't
+// lay out their own margins (fixed-layout and MuPDF-reflowed ones) report none,
+// so derive it from the margin width setting instead.
+fn progress_bar_side_margin(doc_margin: &Edge, margin_width: i32) -> i32 {
+    if doc_margin.left > 0 {
+        doc_margin.left
+    } else {
+        mm_to_px(margin_width as f32, CURRENT_DEVICE.dpi) as i32
+    }
+}
+
 fn scaling_factor(rect: &Rectangle, cropping_margin: &Margin, screen_margin_width: i32, dims: (f32, f32), zoom_mode: ZoomMode) -> f32 {
     if let ZoomMode::Custom(sf) = zoom_mode {
         return sf;
@@ -304,7 +315,7 @@ impl Reader {
             let font_size = info.reader.as_ref().and_then(|r| r.font_size)
                                 .unwrap_or(settings.reader.font_size);
 
-            let bar_thickness = if settings.reader.progress_bar.enabled && doc.is_reflowable() {
+            let bar_thickness = if settings.reader.progress_bar.enabled {
                 pt_to_px(PROGRESS_BAR_HEIGHT_PT, CURRENT_DEVICE.dpi) as i32
             } else {
                 0
@@ -321,7 +332,7 @@ impl Reader {
             }
 
             let doc_margin = doc.margin();
-            let progress_bar_side_margin = doc_margin.left;
+            let progress_bar_side_margin = progress_bar_side_margin(&doc_margin, margin_width);
             let progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
 
             let progress_bar_height = if bar_thickness > 0 {
@@ -509,7 +520,7 @@ impl Reader {
         let (width, height) = context.display.dims;
         let font_size = context.settings.reader.font_size;
         let doc_margin = doc.margin();
-        let progress_bar_side_margin = doc_margin.left;
+        let progress_bar_side_margin = progress_bar_side_margin(&doc_margin, context.settings.reader.margin_width);
         let progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
         let progress_bar_height = if context.settings.reader.progress_bar.enabled {
             let bar_thickness = pt_to_px(PROGRESS_BAR_HEIGHT_PT, CURRENT_DEVICE.dpi) as i32;
@@ -593,7 +604,7 @@ impl Reader {
                                   .cloned().unwrap_or_default();
         let dims = doc.dims(location).unwrap_or((3.0, 4.0));
         let screen_margin_width = self.view_port.margin_width;
-        let scale = scaling_factor(&self.rect, &cropping_margin, screen_margin_width, dims, self.view_port.zoom_mode);
+        let scale = scaling_factor(&self.content_rect(), &cropping_margin, screen_margin_width, dims, self.view_port.zoom_mode);
         if let Some((pixmap, _)) = doc.pixmap(Location::Exact(location), scale, CURRENT_DEVICE.color_samples()) {
             let frame = rect![(cropping_margin.left * pixmap.width as f32).ceil() as i32,
                               (cropping_margin.top * pixmap.height as f32).ceil() as i32,
@@ -803,7 +814,7 @@ impl Reader {
             },
             ScrollMode::Page => {
                 let frame_height = self.cache[&location].frame.height() as i32;
-                let available_height = self.rect.height() as i32 - 2 * self.view_port.margin_width;
+                let available_height = self.content_height() as i32 - 2 * self.view_port.margin_width;
                 if frame_height > available_height {
                     next_top_offset = next_top_offset.max(0).min(frame_height - available_height);
                 } else {
@@ -840,7 +851,7 @@ impl Reader {
         let Resource { frame, .. } = self.cache[&self.current_page];
         let next_page_offset = self.view_port.page_offset + delta;
         let vpw = self.rect.width() as i32 - 2 * self.view_port.margin_width;
-        let vph = self.rect.height() as i32 - 2 * self.view_port.margin_width;
+        let vph = self.content_height() as i32 - 2 * self.view_port.margin_width;
         let vprect = rect![pt!(0), pt!(vpw, vph)] + next_page_offset + frame.min;
 
         if vprect.overlaps(&frame) {
@@ -866,7 +877,7 @@ impl Reader {
                             ScrollMode::Screen => {
                                 let first_chunk = self.chunks.first().cloned().unwrap();
                                 let mut location = first_chunk.location;
-                                let available_height = self.rect.height() as i32 - 2 * self.view_port.margin_width;
+                                let available_height = self.content_height() as i32 - 2 * self.view_port.margin_width;
                                 let mut height = 0;
 
                                 loop {
@@ -905,7 +916,7 @@ impl Reader {
                                 Location::Exact(location)
                             },
                             ScrollMode::Page => {
-                                let available_height = self.rect.height() as i32 - 2 * self.view_port.margin_width;
+                                let available_height = self.content_height() as i32 - 2 * self.view_port.margin_width;
                                 if self.view_port.page_offset.y > 0 {
                                     self.view_port.page_offset.y = (self.view_port.page_offset.y - available_height).max(0);
                                     Location::Exact(current_page)
@@ -946,7 +957,7 @@ impl Reader {
                                 }
                             },
                             ScrollMode::Page => {
-                                let available_height = self.rect.height() as i32 - 2 * self.view_port.margin_width;
+                                let available_height = self.content_height() as i32 - 2 * self.view_port.margin_width;
                                 let frame_height = self.cache[&current_page].frame.height() as i32;
                                 let next_top_offset = self.view_port.page_offset.y + available_height;
                                 if frame_height < available_height || next_top_offset == frame_height {
@@ -1170,6 +1181,12 @@ impl Reader {
 
     fn content_height(&self) -> u32 {
         self.rect.height().saturating_sub(self.progress_bar_height as u32)
+    }
+
+    // The area above the progress bar strip, where pages are fitted and drawn.
+    fn content_rect(&self) -> Rectangle {
+        rect![self.rect.min.x, self.rect.min.y,
+              self.rect.max.x, self.rect.min.y + self.content_height() as i32]
     }
 
     fn update_chapter_notches(&mut self) {
@@ -2550,7 +2567,7 @@ impl Reader {
             let mut doc = self.doc.lock().unwrap();
             doc.set_margin_width(width);
             let doc_margin = doc.margin();
-            self.progress_bar_side_margin = doc_margin.left;
+            self.progress_bar_side_margin = progress_bar_side_margin(&doc_margin, width);
             self.progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
 
             if self.progress_bar_height > 0 {
@@ -2604,29 +2621,30 @@ impl Reader {
         let enabled = !context.settings.reader.progress_bar.enabled;
         context.settings.reader.progress_bar.enabled = enabled;
 
-        if !self.reflowable {
-            return;
-        }
-
         {
             let mut doc = self.doc.lock().unwrap();
-            // Restore the uniform bottom margin that the progress bar halved.
+            // Restore the uniform bottom margin that the progress bar quartered.
             let doc_margin = doc.margin();
             doc.set_margin(&Edge { bottom: doc_margin.left, ..doc_margin });
             let doc_margin = doc.margin();
-            self.progress_bar_side_margin = doc_margin.left;
+            let margin_width = self.info.reader.as_ref().and_then(|r| r.margin_width)
+                                   .unwrap_or(context.settings.reader.margin_width);
+            self.progress_bar_side_margin = progress_bar_side_margin(&doc_margin, margin_width);
             self.progress_bar_bottom_margin = pt_to_px(PROGRESS_BAR_BOTTOM_MARGIN_PT, CURRENT_DEVICE.dpi) as i32;
 
             if enabled {
                 let bar_thickness = pt_to_px(PROGRESS_BAR_HEIGHT_PT, CURRENT_DEVICE.dpi) as i32;
                 self.progress_bar_height = bar_thickness + self.progress_bar_bottom_margin;
-                // Halve the text's bottom margin so it sits closer to the progress bar.
-                let text_bottom = doc_margin.bottom / 2;
+                // Quarter the text's bottom margin so it sits closer to the progress bar.
+                let text_bottom = doc_margin.bottom / 4;
                 doc.set_margin(&Edge { bottom: text_bottom, ..doc_margin });
             } else {
                 self.progress_bar_height = 0;
             }
+        }
 
+        if self.reflowable {
+            let mut doc = self.doc.lock().unwrap();
             let (display_width, display_height) = context.display.dims;
             let font_size = self.info.reader.as_ref().and_then(|r| r.font_size)
                                 .unwrap_or(context.settings.reader.font_size);
@@ -2724,7 +2742,7 @@ impl Reader {
                 let doc = self.doc.lock().unwrap();
                 doc.dims(index).unwrap()
             };
-            let scale = scaling_factor(&self.rect, margin, self.view_port.margin_width, dims, self.view_port.zoom_mode);
+            let scale = scaling_factor(&self.content_rect(), margin, self.view_port.margin_width, dims, self.view_port.zoom_mode);
             if x_ratio >= margin.left && x_ratio <= (1.0 - margin.right) {
                 self.view_port.page_offset.x = (scale * (x_ratio - margin.left) * dims.0) as i32;
             } else {
@@ -3055,7 +3073,7 @@ impl Reader {
             self.current_page = chunk.location;
             self.view_port.page_offset = Point::from(factor * Vec2::from(center - chunk.position + chunk.frame.min - frame.min)) -
                                          pt!(self.rect.width() as i32 / 2 - smw,
-                                             self.rect.height() as i32 / 2 - smw);
+                                             self.content_height() as i32 / 2 - smw);
 
             self.set_zoom_mode(ZoomMode::Custom(current_factor * factor), false, hub, rq, context);
         }
@@ -3468,7 +3486,7 @@ impl View for Reader {
 
                 if let ZoomMode::Custom(_) = self.view_port.zoom_mode {
                     let dx = self.rect.width() as i32 - 2 * self.view_port.margin_width;
-                    let dy = self.rect.height() as i32 - 2 * self.view_port.margin_width;
+                    let dy = self.content_height() as i32 - 2 * self.view_port.margin_width;
                     match Region::from_point(center, self.rect,
                                              context.settings.reader.strip_width,
                                              context.settings.reader.corner_width) {

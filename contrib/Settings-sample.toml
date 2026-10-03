@@ -139,7 +139,7 @@ ignore-document-css = false
 # when opened for the first time.
 dithered-kinds = ["cbz", "jpg", "png", "jpeg"]
 
-# The always-visible progress bar drawn below the text of reflowable documents.
+# The always-visible progress bar drawn below the page content.
 [reader.progress-bar]
 enabled = true
 
