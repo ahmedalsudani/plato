@@ -20,6 +20,13 @@ the path to the executable associated with this hook. The `sort-method`,
 specified, they will override the *home*'s settings of the same name, while
 `path` is being selected.
 
+The `import-on-exit` key is also optional and defaults to `false`. When set to
+`true`, *Plato* runs the import process as soon as `program` exits, whatever
+its exit status, so that the files it put in the library without sending
+`addDocument` events appear right away, with their metadata extracted according
+to the `[import]` settings. It has no effect in *filesystem* mode, and the
+import doesn't run when `program` is terminated because `path` was deselected.
+
 The *Toogle Select* sub-menu of the library menu can be used to trigger a hook
 when there's no imported documents in `path`. Otherwise, you can just tap the
 directory in the navigation bar. When the hook is triggered, the associated

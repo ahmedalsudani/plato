@@ -78,6 +78,7 @@ struct Fetcher {
     reverse_order: Option<bool>,
     first_column: Option<FirstColumn>,
     second_column: Option<SecondColumn>,
+    import_on_exit: bool,
 }
 
 impl Home {
@@ -1310,7 +1311,8 @@ impl Home {
                 }
                 self.background_fetchers.insert(process.id(),
                                                 Fetcher { path: hook.path.clone(), full_path: save_path, process,
-                                                          sort_method, reverse_order, first_column, second_column });
+                                                          sort_method, reverse_order, first_column, second_column,
+                                                          import_on_exit: hook.import_on_exit });
             },
             Err(e) => eprintln!("Can't spawn child: {:#}.", e),
         }
@@ -1751,6 +1753,7 @@ impl View for Home {
                 true
             },
             Event::CheckFetcher(id) => {
+                let mut import_on_exit = false;
                 if let Some(fetcher) = self.background_fetchers.get_mut(&id) {
                     if let Ok(exit_status) = fetcher.process.wait() {
                         if !exit_status.success() {
@@ -1759,6 +1762,12 @@ impl View for Home {
                             self.children.push(Box::new(notif) as Box<dyn View>);
                         }
                     }
+                    // Import whatever the exit status: a failing program may still have
+                    // added files.
+                    import_on_exit = fetcher.import_on_exit;
+                }
+                if import_on_exit {
+                    self.import(hub, rq, context);
                 }
                 true
             },

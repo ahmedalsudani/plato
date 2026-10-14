@@ -291,6 +291,7 @@ pub struct Hook {
     pub reverse_order: Option<bool>,
     pub first_column: Option<FirstColumn>,
     pub second_column: Option<SecondColumn>,
+    pub import_on_exit: bool,
 }
 
 impl Default for Hook {
@@ -302,6 +303,7 @@ impl Default for Hook {
             reverse_order: None,
             first_column: None,
             second_column: None,
+            import_on_exit: false,
         }
     }
 }
@@ -545,6 +547,7 @@ impl Default for Settings {
                             reverse_order: None,
                             first_column: Some(FirstColumn::TitleAndAuthor),
                             second_column: Some(SecondColumn::Progress),
+                            import_on_exit: false,
                         }
                     ],
                     .. Default::default()
@@ -594,5 +597,25 @@ impl Default for Settings {
             frontlight_levels: LightLevels::default(),
             frontlight_presets: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hook_import_on_exit_defaults_to_false() {
+        let hook: Hook = toml::from_str("path = \"Books\"\n\
+                                         program = \"bin/fetcher\"\n").unwrap();
+        assert!(!hook.import_on_exit);
+    }
+
+    #[test]
+    fn test_hook_import_on_exit() {
+        let hook: Hook = toml::from_str("path = \"Books\"\n\
+                                         program = \"bin/fetcher\"\n\
+                                         import-on-exit = true\n").unwrap();
+        assert!(hook.import_on_exit);
     }
 }

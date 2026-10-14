@@ -40,6 +40,9 @@ thumbnail-previews = true
 
 # This example fetcher retrieves articles through the *Wallabag* protocol.
 # See `doc/ARTICLE_FETCHER.md` on how to configure it.
+# A hook whose program adds files without sending `addDocument`
+# events can set `import-on-exit = true` to import the library
+# as soon as the program exits (see `doc/HOOKS.md`).
 [[libraries.hooks]]
 path = "Articles"
 program = "bin/article_fetcher/article_fetcher"
