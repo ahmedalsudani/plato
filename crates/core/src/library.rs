@@ -216,6 +216,26 @@ impl Library {
         (files, dirs)
     }
 
+    // Returns the current information of the document at the given path,
+    // relative to the library's home, reading state included.
+    pub fn info<P: AsRef<Path>>(&self, path: P) -> Option<Info> {
+        let path = path.as_ref();
+        match self.mode {
+            LibraryMode::Database => {
+                self.paths.get(path)
+                    .and_then(|fp| self.db.get(fp))
+                    .cloned()
+            },
+            LibraryMode::Filesystem => {
+                let parent = path.parent()
+                                 .map(|p| self.home.join(p))
+                                 .unwrap_or_else(|| self.home.clone());
+                let (files, _) = self.list(&parent, None, false);
+                files.into_iter().find(|info| info.file.path == path)
+            },
+        }
+    }
+
     pub fn import(&mut self, settings: &ImportSettings) {
         if self.mode == LibraryMode::Filesystem {
             return;
@@ -845,5 +865,78 @@ impl Library {
         self.home
             .join(THUMBNAIL_PREVIEWS_DIRNAME)
             .join(format!("{}.png", fp))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+    use std::fs::{self, File};
+    use std::path::{Path, PathBuf};
+    use crate::metadata::{Info, FileInfo, ReaderInfo};
+    use crate::settings::LibraryMode;
+    use super::Library;
+
+    // A library directory holding `first.epub` and `Series/second.pdf`.
+    fn library_dir(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("plato-library-{}-{}", name, std::process::id()));
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(dir.join("Series")).unwrap();
+        File::create(dir.join("first.epub")).unwrap();
+        File::create(dir.join("Series").join("second.pdf")).unwrap();
+        dir
+    }
+
+    fn finished() -> ReaderInfo {
+        ReaderInfo {
+            finished: true,
+            .. Default::default()
+        }
+    }
+
+    #[test]
+    fn test_info_filesystem() {
+        let dir = library_dir("info-filesystem");
+        let mut library = Library::new(&dir, LibraryMode::Filesystem).unwrap();
+
+        let info = library.info("Series/second.pdf").unwrap();
+        assert_eq!(info.file.path, Path::new("Series/second.pdf"));
+        assert_eq!(info.file.kind, "pdf");
+        assert!(library.info("first.epub").is_some());
+        assert!(library.info("missing.epub").is_none());
+        assert!(library.info("Missing/first.epub").is_none());
+
+        // The reading state is the latest one.
+        assert!(library.info("first.epub").unwrap().reader.is_none());
+        library.sync_reader_info("first.epub", &finished());
+        assert!(library.info("first.epub").unwrap().reader.map_or(false, |r| r.finished));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_info_database() {
+        let dir = library_dir("info-database");
+        let mut library = Library::new(&dir, LibraryMode::Database).unwrap();
+
+        assert!(library.info("first.epub").is_none());
+        library.add_document(Info {
+            title: "First".to_string(),
+            file: FileInfo {
+                path: PathBuf::from("first.epub"),
+                kind: "epub".to_string(),
+                size: 0,
+            },
+            .. Default::default()
+        });
+        assert_eq!(library.info("first.epub").unwrap().title, "First");
+        // Files that weren't added to the database are unknown.
+        assert!(library.info("Series/second.pdf").is_none());
+
+        // The reading state is the latest one.
+        library.sync_reader_info("first.epub", &finished());
+        assert!(library.info("first.epub").unwrap().reader.map_or(false, |r| r.finished));
+
+        fs::remove_dir_all(&dir).ok();
     }
 }

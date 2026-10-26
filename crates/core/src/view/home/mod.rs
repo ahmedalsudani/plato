@@ -888,6 +888,14 @@ impl Home {
         (index_lower + index).min(self.visible_books.len())
     }
 
+    // The paths of the visible books, in the order they're shown: they reflect
+    // the current library, directory, search query and sort order.
+    pub fn book_list(&self) -> Vec<PathBuf> {
+        self.visible_books.iter()
+            .map(|info| info.file.path.clone())
+            .collect()
+    }
+
     fn toggle_book_menu(&mut self, index: usize, rect: Rectangle, enable: Option<bool>, rq: &mut RenderQueue, context: &mut Context) {
         if let Some(index) = locate_by_id(self, ViewId::BookMenu) {
             if let Some(true) = enable {

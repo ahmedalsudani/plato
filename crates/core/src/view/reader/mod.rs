@@ -4,6 +4,7 @@ mod results_bar;
 mod margin_cropper;
 mod chapter_label;
 mod results_label;
+mod end_of_book;
 
 use std::thread;
 use std::sync::{Arc, Mutex};
@@ -34,6 +35,8 @@ use super::top_bar::TopBar;
 use self::tool_bar::ToolBar;
 use self::bottom_bar::BottomBar;
 use self::results_bar::ResultsBar;
+use self::end_of_book::{EndOfBook, neighbor_book};
+use crate::view::home::Home;
 use crate::view::common::{locate, rlocate, locate_by_id};
 use crate::view::common::{toggle_main_menu, toggle_battery_menu, toggle_clock_menu};
 use crate::view::filler::Filler;
@@ -101,6 +104,7 @@ pub struct Reader {
     reflowable: bool,
     ephemeral: bool,
     finished: bool,
+    book_list: Vec<PathBuf>,                         // Books of the home view the book was opened from, in their displayed order.
     progress_bar_height: i32,                        // Full strip reserved at the bottom: bar thickness plus bottom margin; zero when inactive.
     progress_bar_side_margin: i32,                   // Whitespace left and right of the bar; matches the book margin.
     progress_bar_bottom_margin: i32,                 // Whitespace below the bar; half the book margin.
@@ -493,6 +497,7 @@ impl Reader {
                 ephemeral: false,
                 reflowable,
                 finished: false,
+                book_list: Vec::new(),
                 progress_bar_height,
                 progress_bar_side_margin,
                 progress_bar_bottom_margin,
@@ -582,6 +587,7 @@ impl Reader {
             ephemeral: true,
             reflowable: true,
             finished: false,
+            book_list: Vec::new(),
             progress_bar_height,
             progress_bar_side_margin,
             progress_bar_bottom_margin,
@@ -589,6 +595,51 @@ impl Reader {
             footer_chapter: String::new(),
             footer_time,
             footer_battery,
+        }
+    }
+
+    // Keeps the books the end-of-book screen moves through: those of the home
+    // view the book is opened from, or the list of the reader of the finished
+    // book this reader replaces.
+    pub fn set_book_list_from(&mut self, view: &dyn View) {
+        if let Some(home) = view.downcast_ref::<Home>() {
+            self.book_list = home.book_list();
+        } else if let Some(reader) = view.downcast_ref::<Reader>() {
+            self.book_list = reader.book_list.clone();
+        }
+    }
+
+    // The current information of the book that precedes or follows this one in the book list.
+    fn neighbor_book_info(&self, dir: CycleDir, context: &Context) -> Option<Info> {
+        neighbor_book(&self.book_list, &self.info.file.path, dir)
+            .and_then(|path| context.library.info(path))
+    }
+
+    fn show_end_of_book(&mut self, rq: &mut RenderQueue, context: &mut Context) {
+        if locate_by_id(self, ViewId::EndOfBook).is_some() {
+            return;
+        }
+
+        let has_previous = self.neighbor_book_info(CycleDir::Previous, context).is_some();
+        let has_next = self.neighbor_book_info(CycleDir::Next, context).is_some();
+        let end_of_book = EndOfBook::new(has_previous, has_next, context);
+        rq.add(RenderData::new(end_of_book.id(), *end_of_book.rect(), UpdateMode::Gui));
+        self.children.push(Box::new(end_of_book) as Box<dyn View>);
+    }
+
+    fn open_neighbor_book(&mut self, dir: CycleDir, hub: &Hub, rq: &mut RenderQueue, context: &mut Context) {
+        if let Some(info) = self.neighbor_book_info(dir, context) {
+            // Save the reading state first: the main loop sets the rotation and
+            // the dithering of the next book before replacing this reader.
+            self.quit(context);
+            hub.send(Event::Open(Box::new(info))).ok();
+        } else {
+            let text = match dir {
+                CycleDir::Next => "No next book.",
+                CycleDir::Previous => "No previous book.",
+            };
+            let notif = Notification::new(text.to_string(), hub, rq, context);
+            self.children.push(Box::new(notif) as Box<dyn View>);
         }
     }
 
@@ -1005,6 +1056,9 @@ impl Reader {
                             context.settings.reader.finished
                         };
                         match action {
+                            FinishedAction::EndOfBook => {
+                                self.show_end_of_book(rq, context);
+                            },
                             FinishedAction::Notify => {
                                 let notif = Notification::new("No next page.".to_string(),
                                                               hub, rq, context);
@@ -3834,6 +3888,17 @@ impl View for Reader {
             },
             Event::Chapter(dir) => {
                 self.go_to_chapter(dir, hub, rq, context);
+                true
+            },
+            Event::Book(dir) => {
+                self.open_neighbor_book(dir, hub, rq, context);
+                true
+            },
+            Event::Invalid(ref path) => {
+                // The book picked on the end-of-book screen couldn't be opened.
+                let message = format!("Can't open {}.", path.display());
+                let notif = Notification::new(message, hub, rq, context);
+                self.children.push(Box::new(notif) as Box<dyn View>);
                 true
             },
             Event::ResultsPage(dir) => {

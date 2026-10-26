@@ -409,10 +409,15 @@ fn main() -> Result<(), Error> {
                         }
                     }
                     let path = info.file.path.clone();
-                    if let Some(r) = Reader::new(context.fb.rect(), *info, &tx, &mut context) {
+                    if let Some(mut r) = Reader::new(context.fb.rect(), *info, &tx, &mut context) {
+                        r.set_book_list_from(view.as_ref());
                         let mut next_view = Box::new(r) as Box<dyn View>;
                         transfer_notifications(view.as_mut(), next_view.as_mut(), &mut rq, &mut context);
-                        history.push(view as Box<dyn View>);
+                        // A reader opens the previous or next book of its finished book:
+                        // replace it instead of stacking the new reader on top of it.
+                        if !view.is::<Reader>() {
+                            history.push(view as Box<dyn View>);
+                        }
                         view = next_view;
                     } else {
                         if context.display.rotation != rotation {

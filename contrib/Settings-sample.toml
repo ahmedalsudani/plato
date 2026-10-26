@@ -91,8 +91,10 @@ max-trash-size = 33_554_432
 
 [reader]
 # How to react when a book is finished.
-# Possible values: "notify", "close".
-finished = "close"
+# Possible values: "end-of-book", "notify", "close".
+# "end-of-book" shows a screen that opens the previous or next book
+# of the home view the book was opened from, or goes back to it.
+finished = "end-of-book"
 # The action triggered when tapping the south-east corner.
 # Possible values: "go-to-page", "next-page", "toggle-progress-bar".
 south-east-corner = "go-to-page"

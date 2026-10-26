@@ -385,9 +385,11 @@ pub struct BatterySettings {
     pub power_off: f32,
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FinishedAction {
+    // Show the end-of-book screen, to open the previous or next book.
+    EndOfBook,
     Notify,
     Close,
 }
@@ -471,7 +473,7 @@ impl Default for ParagraphBreakerSettings {
 impl Default for ReaderSettings {
     fn default() -> Self {
         ReaderSettings {
-            finished: FinishedAction::Close,
+            finished: FinishedAction::EndOfBook,
             south_east_corner: SouthEastCornerAction::GoToPage,
             bottom_right_gesture: BottomRightGestureAction::ToggleDithered,
             north_strip: NorthStripAction::PreviousPage,
@@ -617,5 +619,26 @@ mod tests {
                                          program = \"bin/fetcher\"\n\
                                          import-on-exit = true\n").unwrap();
         assert!(hook.import_on_exit);
+    }
+
+    #[test]
+    fn test_finished_defaults_to_end_of_book() {
+        assert_eq!(ReaderSettings::default().finished, FinishedAction::EndOfBook);
+        let reader: ReaderSettings = toml::from_str("font-size = 12.0\n").unwrap();
+        assert_eq!(reader.finished, FinishedAction::EndOfBook);
+    }
+
+    #[test]
+    fn test_finished_values() {
+        for (value, action) in [("end-of-book", FinishedAction::EndOfBook),
+                                ("notify", FinishedAction::Notify),
+                                ("close", FinishedAction::Close)] {
+            let text = format!("finished = \"{}\"\n", value);
+            let reader: ReaderSettings = toml::from_str(&text).unwrap();
+            assert_eq!(reader.finished, action);
+            // The value survives saving and loading the settings.
+            let saved: ReaderSettings = toml::from_str(&toml::to_string(&reader).unwrap()).unwrap();
+            assert_eq!(saved.finished, action);
+        }
     }
 }

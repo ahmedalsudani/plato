@@ -835,15 +835,20 @@ pub fn run() -> Result<(), Error> {
                     context.fb.set_dithered(context.settings.reader.dithered_kinds.contains(&info.file.kind));
                 }
                 let path = info.file.path.clone();
-                if let Some(r) = Reader::new(context.fb.rect(), *info, &tx, &mut context) {
+                if let Some(mut r) = Reader::new(context.fb.rect(), *info, &tx, &mut context) {
+                    r.set_book_list_from(view.as_ref());
                     let mut next_view = Box::new(r) as Box<dyn View>;
                     transfer_notifications(view.as_mut(), next_view.as_mut(), &mut rq, &mut context);
-                    history.push(HistoryItem {
-                        view,
-                        rotation,
-                        monochrome: context.fb.monochrome(),
-                        dithered,
-                    });
+                    // A reader opens the previous or next book of its finished book:
+                    // replace it instead of stacking the new reader on top of it.
+                    if !view.is::<Reader>() {
+                        history.push(HistoryItem {
+                            view,
+                            rotation,
+                            monochrome: context.fb.monochrome(),
+                            dithered,
+                        });
+                    }
                     view = next_view;
                 } else {
                     if context.display.rotation != rotation {

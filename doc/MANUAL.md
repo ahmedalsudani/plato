@@ -133,6 +133,16 @@ Simultaneous swipe sequences:
 
 To select text, tap and hold the first or last word of the selection. Wait for the selection feedback. Move your finger on the other end of the selection and lift it. If you've made a mistake, select *Adjust Selection* and tap on the correct ends; tap and hold the selection when you're done.
 
+### End of Book
+
+Turning the page past the end of a book brings up the end-of-book screen:
+
+- *Previous* and *Next* open the books shown before and after the finished book in the home view it was opened from: same library, directory, search query and sort order, in the order they had when the book was opened. A book opened this way keeps that list, so you can go on through it. A button is disabled when there's no such book, e.g. at either end of the list.
+- *Library* goes back to the home view.
+- Tap the close icon, or outside of the screen, to stay on the last page.
+
+The `finished` setting of the `[reader]` section of `Settings.toml` selects what happens when a book is finished: `end-of-book` (the default) shows this screen, `notify` shows a notification, and `close` goes back to the home view.
+
 ## Bottom bar
 
 Tap and hold the next/previous page icon to go the next/previous chapter.
