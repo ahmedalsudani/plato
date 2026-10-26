@@ -7,9 +7,11 @@ use crate::view::{View, Event, Hub, Bus, Id, ID_FEEDER, RenderQueue, RenderData}
 use crate::view::{SMALL_BAR_HEIGHT, THICKNESS_MEDIUM};
 use crate::unit::scale_by_dpi;
 use crate::view::filler::Filler;
+use crate::view::icon::Icon;
 use super::directories_bar::DirectoriesBar;
+use super::directory_hooks;
 use crate::gesture::GestureEvent;
-use crate::color::SEPARATOR_NORMAL;
+use crate::color::{SEPARATOR_NORMAL, TEXT_BUMP_SMALL};
 use crate::context::Context;
 use crate::font::{Fonts, font_from_style, NORMAL_STYLE};
 use crate::geom::{Point, Rectangle, Dir};
@@ -22,6 +24,34 @@ pub struct NavigationBar {
     path: PathBuf,
     pub vertical_limit: i32,
     max_levels: usize,
+    // Whether the current directory has a hook, run by the sync button.
+    sync_button: bool,
+}
+
+// How the navigation bar's rectangle is shared: the directories bars on the
+// left and, when there's a sync button, the button on the right, separated
+// from the bars by a vertical line. The button and its separator span the
+// height of the navigation bar.
+#[derive(Debug, PartialEq)]
+struct Layout {
+    directories: Rectangle,
+    separator: Option<Rectangle>,
+    button: Option<Rectangle>,
+}
+
+fn layout(rect: &Rectangle, sync_button: bool, thickness: i32, button_width: i32) -> Layout {
+    if !sync_button {
+        return Layout { directories: *rect, separator: None, button: None };
+    }
+
+    let button = rect![rect.max.x - button_width, rect.min.y,
+                       rect.max.x, rect.max.y];
+    let separator = rect![button.min.x - thickness, rect.min.y,
+                          button.min.x, rect.max.y];
+    let directories = rect![rect.min.x, rect.min.y,
+                            separator.min.x, rect.max.y];
+
+    Layout { directories, separator: Some(separator), button: Some(button) }
 }
 
 impl NavigationBar {
@@ -33,11 +63,40 @@ impl NavigationBar {
             path: PathBuf::default(),
             vertical_limit,
             max_levels,
+            sync_button: false,
         }
     }
 
     pub fn clear(&mut self) {
         self.children.clear();
+    }
+
+    fn current_layout(&self) -> Layout {
+        let dpi = CURRENT_DEVICE.dpi;
+        let thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as i32;
+        let min_height = scale_by_dpi(SMALL_BAR_HEIGHT, dpi) as i32 - thickness;
+        // The button is square on a single line bar.
+        layout(&self.rect, self.sync_button, thickness, min_height)
+    }
+
+    // The sync button and its separator come after the directories bars and
+    // the separators between them. The methods that lay out the bars remove
+    // the button first and add it back last, once the bar's height is known.
+    fn remove_sync_button(&mut self) {
+        if self.children.last().map_or(false, |child| child.is::<Icon>()) {
+            let len = self.children.len();
+            self.children.truncate(len - 2);
+        }
+    }
+
+    fn add_sync_button(&mut self) {
+        let Layout { separator, button, .. } = self.current_layout();
+        if let (Some(separator), Some(button)) = (separator, button) {
+            self.children.push(Box::new(Filler::new(separator, SEPARATOR_NORMAL)) as Box<dyn View>);
+            let icon = Icon::new("sync", button, Event::RunHook)
+                            .background(TEXT_BUMP_SMALL[0]);
+            self.children.push(Box::new(icon) as Box<dyn View>);
+        }
     }
 
     pub fn set_path<P: AsRef<Path>>(&mut self, path: P, path_dirs: &BTreeSet<PathBuf>, rq: &mut RenderQueue, context: &mut Context) {
@@ -47,6 +106,12 @@ impl NavigationBar {
         let font = font_from_style(&mut context.fonts, &NORMAL_STYLE, dpi);
         let x_height = font.x_heights.0 as i32;
         let padding = min_height - x_height;
+
+        let selected_library = context.settings.selected_library;
+        self.sync_button = directory_hooks(&context.settings.libraries[selected_library].hooks,
+                                           &context.library.home, path.as_ref()).next().is_some();
+        self.remove_sync_button();
+        let dirs_max_x = self.current_layout().directories.max.x;
 
         let first = self.children.first()
                         .and_then(|child| child.downcast_ref::<DirectoriesBar>())
@@ -118,22 +183,22 @@ impl NavigationBar {
 
                 if self.children.get(index).map_or(true, |child| child.is::<Filler>()) {
                     let rect = rect![self.rect.min.x, y_max - height,
-                                     self.rect.max.x, y_max];
+                                     dirs_max_x, y_max];
                     self.children.insert(index, Box::new(DirectoriesBar::new(rect, current)));
                     y_max -= height;
 
                     let rect = rect![self.rect.min.x, y_max - thickness,
-                                     self.rect.max.x, y_max];
+                                     dirs_max_x, y_max];
                     self.children.insert(index, Box::new(Filler::new(rect, SEPARATOR_NORMAL)));
                     y_max -= thickness;
                 } else {
                     let rect = rect![self.rect.min.x, y_max - thickness,
-                                     self.rect.max.x, y_max];
+                                     dirs_max_x, y_max];
                     self.children.insert(index, Box::new(Filler::new(rect, SEPARATOR_NORMAL)));
                     y_max -= thickness;
 
                     let rect = rect![self.rect.min.x, y_max - height,
-                                     self.rect.max.x, y_max];
+                                     dirs_max_x, y_max];
                     self.children.insert(index, Box::new(DirectoriesBar::new(rect, current)));
                     y_max -= height;
                 }
@@ -154,7 +219,7 @@ impl NavigationBar {
 
         if self.children.is_empty() {
             let rect = rect![self.rect.min.x, self.rect.min.y,
-                             self.rect.max.x, self.rect.min.y + min_height];
+                             dirs_max_x, self.rect.min.y + min_height];
             self.children.push(Box::new(DirectoriesBar::new(rect, path.as_ref())));
         }
 
@@ -185,6 +250,11 @@ impl NavigationBar {
                             dirs_bar.update_content(&dirs, path.as_ref(), &mut context.fonts);
                         }
                     }
+                } else if dirs_bar.rect.max.x != dirs_max_x {
+                    // The sync button appeared or disappeared.
+                    dirs_bar.rect.max.x = dirs_max_x;
+                    let dirs = dirs_bar.dirs();
+                    dirs_bar.update_content(&dirs, path.as_ref(), &mut context.fonts);
                 } else if current == last {
                     dirs_bar.update_selected(path.as_ref());
                 }
@@ -195,7 +265,9 @@ impl NavigationBar {
                     break;
                 }
             } else {
-                *self.children[index].rect_mut() += pt!(0, y_shift);
+                let rect = self.children[index].rect_mut();
+                *rect += pt!(0, y_shift);
+                rect.max.x = dirs_max_x;
             }
 
             if index == 0 {
@@ -206,6 +278,7 @@ impl NavigationBar {
         }
 
         self.rect.max.y = self.children[self.children.len()-1].rect().max.y;
+        self.add_sync_button();
         rq.add(RenderData::new(self.id, self.rect, UpdateMode::Partial));
         self.path = path.as_ref().to_path_buf();
     }
@@ -223,6 +296,7 @@ impl NavigationBar {
 
 
     pub fn shrink(&mut self, delta_y: i32, fonts: &mut Fonts) -> i32 {
+        self.remove_sync_button();
         let dpi = CURRENT_DEVICE.dpi;
         let thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as i32;
         let min_height = scale_by_dpi(SMALL_BAR_HEIGHT, dpi) as i32 - thickness;
@@ -267,6 +341,7 @@ impl NavigationBar {
         }
 
         self.rect.max.y = self.children[self.children.len()-1].rect().max.y;
+        self.add_sync_button();
 
         y_shift
     }
@@ -327,7 +402,9 @@ impl View for NavigationBar {
                         if let Some(index) = self.children.iter().position(|child| child.is::<DirectoriesBar>() && child.rect().includes(pt)) {
                             // Move the bottom edge of the child by end.y - start.y.
                             // Shift all the children after the child.
+                            self.remove_sync_button();
                             let y_shift = self.resize_child(index, end.y - start.y, &mut context.fonts);
+                            self.add_sync_button();
                             bus.push_back(Event::NavigationBarResized(y_shift));
                         }
                         true
@@ -360,5 +437,32 @@ impl View for NavigationBar {
 
     fn id(&self) -> Id {
         self.id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{layout, Layout};
+
+    #[test]
+    fn test_layout_with_sync_button() {
+        let rect = rect![0, 100, 600, 220];
+        let Layout { directories, separator, button } = layout(&rect, true, 3, 60);
+        let (separator, button) = (separator.unwrap(), button.unwrap());
+        // The button is at the right end, and spans the height of the bar.
+        assert_eq!(button, rect![540, 100, 600, 220]);
+        // The vertical line is between the directories and the button.
+        assert_eq!(separator, rect![537, 100, 540, 220]);
+        assert_eq!(directories, rect![0, 100, 537, 220]);
+        assert!(!directories.overlaps(&separator));
+        assert!(!directories.overlaps(&button));
+        assert!(!separator.overlaps(&button));
+    }
+
+    #[test]
+    fn test_layout_without_sync_button() {
+        let rect = rect![0, 100, 600, 160];
+        assert_eq!(layout(&rect, false, 3, 60),
+                   Layout { directories: rect, separator: None, button: None });
     }
 }

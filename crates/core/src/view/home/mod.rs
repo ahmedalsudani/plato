@@ -51,6 +51,12 @@ use crate::context::Context;
 
 pub const TRASH_DIRNAME: &str = ".trash";
 
+// The hooks, among `hooks`, of the directory at `path`, in the library whose
+// home is `home`.
+pub fn directory_hooks<'a>(hooks: &'a [Hook], home: &'a Path, path: &'a Path) -> impl Iterator<Item=&'a Hook> {
+    hooks.iter().filter(move |hook| home.join(&hook.path) == path)
+}
+
 #[derive(Debug)]
 pub struct Home {
     id: Id,
@@ -73,7 +79,10 @@ pub struct Home {
 struct Fetcher {
     path: PathBuf,
     full_path: PathBuf,
+    program: PathBuf,
     process: Child,
+    // Cleared once the process has exited and its exit has been handled.
+    running: bool,
     sort_method: Option<SortMethod>,
     reverse_order: Option<bool>,
     first_column: Option<FirstColumn>,
@@ -216,13 +225,6 @@ impl Home {
 
         let old_path = mem::replace(&mut self.current_directory, path.to_path_buf());
         self.terminate_fetchers(&old_path, true, hub, context);
-
-        let selected_library = context.settings.selected_library;
-        for hook in &context.settings.libraries[selected_library].hooks {
-            if context.library.home.join(&hook.path) == path {
-                self.insert_fetcher(hook, hub, context);
-            }
-        }
 
         let (files, dirs) = context.library.list(&self.current_directory,
                                                  self.query.as_ref(),
@@ -1261,7 +1263,11 @@ impl Home {
     fn terminate_fetchers(&mut self, path: &Path, update: bool, hub: &Hub, context: &mut Context) {
         self.background_fetchers.retain(|id, fetcher| {
             if fetcher.full_path == path {
-                unsafe { libc::kill(*id as libc::pid_t, libc::SIGTERM) };
+                // The identifier of a process whose exit was handled might
+                // have been reused.
+                if fetcher.running {
+                    unsafe { libc::kill(*id as libc::pid_t, libc::SIGTERM) };
+                }
                 fetcher.process.wait().ok();
                 if update {
                     if let Some(sort_method) = fetcher.sort_method {
@@ -1295,6 +1301,27 @@ impl Home {
         });
     }
 
+    // Runs the hooks of the current directory, unless they're still running.
+    fn run_hooks(&mut self, hub: &Hub, rq: &mut RenderQueue, context: &mut Context) {
+        let selected_library = context.settings.selected_library;
+        let hooks = directory_hooks(&context.settings.libraries[selected_library].hooks,
+                                    &context.library.home, &self.current_directory)
+                        .cloned().collect::<Vec<Hook>>();
+        for hook in &hooks {
+            let full_path = context.library.home.join(&hook.path);
+            let running = self.background_fetchers.values().any(|fetcher| {
+                fetcher.running && fetcher.full_path == full_path && fetcher.program == hook.program
+            });
+            if running {
+                let msg = format!("{}: the hook is already running.", hook.path.display());
+                let notif = Notification::new(msg, hub, rq, context);
+                self.children.push(Box::new(notif) as Box<dyn View>);
+            } else {
+                self.insert_fetcher(hook, hub, context);
+            }
+        }
+    }
+
     fn insert_fetcher(&mut self, hook: &Hook, hub: &Hub, context: &Context) {
         let library_path = &context.library.home;
         let save_path = context.library.home.join(&hook.path);
@@ -1317,8 +1344,21 @@ impl Home {
                 if let Some(second_column) = second_column.replace(context.settings.libraries[selected_library].second_column) {
                     hub.send(Event::Select(EntryId::SecondColumn(second_column))).ok();
                 }
+                // The hook already ran since its directory was selected: the
+                // settings to restore on deselection are the ones saved then.
+                let previous_id = self.background_fetchers.iter()
+                                      .find(|(_, fetcher)| fetcher.full_path == save_path &&
+                                                           fetcher.program == hook.program)
+                                      .map(|(id, _)| *id);
+                if let Some(previous) = previous_id.and_then(|id| self.background_fetchers.remove(&id)) {
+                    sort_method = previous.sort_method;
+                    reverse_order = previous.reverse_order;
+                    first_column = previous.first_column;
+                    second_column = previous.second_column;
+                }
                 self.background_fetchers.insert(process.id(),
-                                                Fetcher { path: hook.path.clone(), full_path: save_path, process,
+                                                Fetcher { path: hook.path.clone(), full_path: save_path,
+                                                          program: hook.program.clone(), process, running: true,
                                                           sort_method, reverse_order, first_column, second_column,
                                                           import_on_exit: hook.import_on_exit });
             },
@@ -1770,6 +1810,7 @@ impl View for Home {
                             self.children.push(Box::new(notif) as Box<dyn View>);
                         }
                     }
+                    fetcher.running = false;
                     // Import whatever the exit status: a failing program may still have
                     // added files.
                     import_on_exit = fetcher.import_on_exit;
@@ -1777,6 +1818,10 @@ impl View for Home {
                 if import_on_exit {
                     self.import(hub, rq, context);
                 }
+                true
+            },
+            Event::RunHook => {
+                self.run_hooks(hub, rq, context);
                 true
             },
             Event::ToggleFrontlight => {
@@ -1930,5 +1975,342 @@ impl View for Home {
 
     fn id(&self) -> Id {
         self.id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::collections::VecDeque;
+    use std::sync::{Mutex, MutexGuard};
+    use std::sync::mpsc::{self, Receiver};
+    use std::time::Duration;
+    use crate::battery::{Battery, FakeBattery};
+    use crate::context::Context;
+    use crate::device::CURRENT_DEVICE;
+    use crate::font::Fonts;
+    use crate::framebuffer::{Framebuffer, Pixmap};
+    use crate::frontlight::{Frontlight, LightLevels};
+    use crate::gesture::GestureEvent;
+    use crate::geom::Rectangle;
+    use crate::library::Library;
+    use crate::lightsensor::LightSensor;
+    use crate::metadata::SortMethod;
+    use crate::settings::{Settings, LibrarySettings, LibraryMode, Hook};
+    use crate::view::{View, Event, EntryId, Hub, RenderQueue, handle_event};
+    use crate::view::common::locate;
+    use crate::view::filler::Filler;
+    use crate::view::icon::Icon;
+    use crate::view::notification::Notification;
+    use super::{Home, directory_hooks};
+    use super::navigation_bar::NavigationBar;
+    use super::directories_bar::DirectoriesBar;
+
+    // A hook that runs until it's terminated.
+    const LONG_HOOK: &str = "#!/bin/sh\nexec sleep 60\n";
+    // A hook that exits right away.
+    const SHORT_HOOK: &str = "#!/bin/sh\nexit 0\n";
+
+    // Running a program fails with ETXTBSY if another thread forks while the
+    // program is open for writing: the tests that write and run hooks take
+    // turns.
+    static HOOKS_LOCK: Mutex<()> = Mutex::new(());
+
+    // A home view on a library, in filesystem mode, holding the `Articles`,
+    // `Articles/Saved` and `Books` directories. The directories of
+    // `hook_dirs` have a hook that runs `script` and sorts by date added.
+    struct Fixture {
+        dir: PathBuf,
+        home: Home,
+        context: Context,
+        hub: Hub,
+        receiver: Receiver<Event>,
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl Fixture {
+        fn new(name: &str, script: &str, hook_dirs: &[&str]) -> Fixture {
+            let guard = HOOKS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = env::temp_dir().join(format!("plato-home-{}-{}", name, std::process::id()));
+            fs::remove_dir_all(&dir).ok();
+            let library_path = dir.join("library");
+            fs::create_dir_all(library_path.join("Articles").join("Saved")).unwrap();
+            fs::create_dir_all(library_path.join("Books")).unwrap();
+            let program = dir.join("hook.sh");
+            fs::write(&program, script).unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+
+            let hooks = hook_dirs.iter().map(|path| Hook {
+                path: PathBuf::from(path),
+                program: program.clone(),
+                sort_method: Some(SortMethod::Added),
+                .. Default::default()
+            }).collect();
+            let settings = Settings {
+                selected_library: 0,
+                libraries: vec![LibrarySettings {
+                    name: "Test".to_string(),
+                    path: library_path.clone(),
+                    mode: LibraryMode::Filesystem,
+                    sort_method: SortMethod::Opened,
+                    thumbnail_previews: false,
+                    hooks,
+                    .. Default::default()
+                }],
+                .. Default::default()
+            };
+
+            let library = Library::new(&library_path, LibraryMode::Filesystem).unwrap();
+            let fonts = Fonts::load_from(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fonts")).unwrap();
+            let (width, height) = CURRENT_DEVICE.dims;
+            let fb = Box::new(Pixmap::new(width, height, 1)) as Box<dyn Framebuffer>;
+            let mut context = Context::new(fb, None, library, settings, fonts,
+                                           Box::new(FakeBattery::new()) as Box<dyn Battery>,
+                                           Box::new(LightLevels::default()) as Box<dyn Frontlight>,
+                                           Box::new(0u16) as Box<dyn LightSensor>);
+            let (hub, receiver) = mpsc::channel();
+            let rect = rect![0, 0, width as i32, height as i32];
+            let home = Home::new(rect, &hub, &mut RenderQueue::new(), &mut context).unwrap();
+
+            Fixture { dir, home, context, hub, receiver, _guard: guard }
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.context.library.home.join(name)
+        }
+
+        // Handles `evt` as the application does.
+        fn send(&mut self, evt: Event) {
+            let mut bus = VecDeque::new();
+            handle_event(&mut self.home, &evt, &self.hub, &mut bus,
+                         &mut RenderQueue::new(), &mut self.context);
+        }
+
+        // Hands the events sent to the hub over to the view.
+        fn pump(&mut self) {
+            while let Ok(evt) = self.receiver.try_recv() {
+                self.send(evt);
+            }
+        }
+
+        // Same, until the exit of a hook's program has been handled.
+        fn pump_until_exit(&mut self) {
+            loop {
+                let evt = self.receiver.recv_timeout(Duration::from_secs(10))
+                              .expect("the hook didn't exit");
+                let exited = matches!(evt, Event::CheckFetcher(..));
+                self.send(evt);
+                if exited {
+                    break;
+                }
+            }
+            self.pump();
+        }
+
+        fn select(&mut self, name: &str) {
+            let path = self.path(name);
+            self.send(Event::SelectDirectory(path));
+        }
+
+        fn nav_bar(&self) -> &NavigationBar {
+            let index = locate::<NavigationBar>(&self.home).unwrap();
+            self.home.child(index).downcast_ref::<NavigationBar>().unwrap()
+        }
+
+        // The vertical line and the sync button.
+        fn sync_button(&self) -> Option<(Rectangle, Rectangle)> {
+            let children = self.nav_bar().children();
+            let button = children.last().filter(|child| child.is::<Icon>())?;
+            let separator = &children[children.len() - 2];
+            assert!(separator.is::<Filler>());
+            Some((*separator.rect(), *button.rect()))
+        }
+
+        fn tap_sync_button(&mut self) {
+            let (_, button) = self.sync_button().expect("no sync button");
+            self.send(Event::Gesture(GestureEvent::Tap(button.center())));
+        }
+
+        // The process identifiers of the hooks' programs.
+        fn fetchers(&self) -> Vec<u32> {
+            self.home.background_fetchers.keys().cloned().collect()
+        }
+
+        // The sync button is at the right end of the navigation bar, after a
+        // vertical line, and both span the bar's height. The directories bars,
+        // their contents and the lines between them are on the left of the line.
+        fn assert_sync_button(&self, rows: usize) {
+            let nav_bar = self.nav_bar();
+            let rect = *nav_bar.rect();
+            let (separator, button) = self.sync_button().expect("no sync button");
+            assert_eq!(button.max.x, rect.max.x);
+            assert_eq!((button.min.y, button.max.y), (rect.min.y, rect.max.y));
+            assert_eq!(separator.max.x, button.min.x);
+            assert_eq!((separator.min.y, separator.max.y), (rect.min.y, rect.max.y));
+            let children = nav_bar.children();
+            let bars = &children[..children.len() - 2];
+            assert_eq!(bars.iter().filter(|child| child.is::<DirectoriesBar>()).count(), rows);
+            for bar in bars {
+                assert_eq!(bar.rect().max.x, separator.min.x);
+                for child in bar.children() {
+                    assert!(child.rect().max.x <= separator.min.x);
+                }
+            }
+            self.assert_shelf_top_edge();
+        }
+
+        // Without a sync button, the directories bars span the bar's width.
+        fn assert_no_sync_button(&self, rows: usize) {
+            assert!(self.sync_button().is_none());
+            let nav_bar = self.nav_bar();
+            let children = nav_bar.children();
+            assert!(children.iter().all(|child| child.is::<DirectoriesBar>() || child.is::<Filler>()));
+            assert_eq!(children.iter().filter(|child| child.is::<DirectoriesBar>()).count(), rows);
+            assert!(children.iter().all(|child| child.rect().max.x == nav_bar.rect().max.x));
+            self.assert_shelf_top_edge();
+        }
+
+        // The separator below the navigation bar, then the shelf, follow it.
+        fn assert_shelf_top_edge(&self) {
+            let index = self.home.shelf_index;
+            let separator = *self.home.child(index - 1).rect();
+            assert_eq!(separator.min.y, self.nav_bar().rect().max.y);
+            assert_eq!(self.home.child(index).rect().min.y, separator.max.y);
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            for fetcher in self.home.background_fetchers.values_mut() {
+                fetcher.process.kill().ok();
+                fetcher.process.wait().ok();
+            }
+            fs::remove_dir_all(&self.dir).ok();
+        }
+    }
+
+    #[test]
+    fn test_directory_hooks() {
+        let hook = |path: &str, program: &str| Hook {
+            path: PathBuf::from(path),
+            program: PathBuf::from(program),
+            .. Default::default()
+        };
+        let hooks = vec![hook("Articles", "fetcher"), hook("Books", "fetcher"), hook("Articles", "other")];
+        let programs = |path: &str| {
+            directory_hooks(&hooks, Path::new("/mnt/onboard"), Path::new(path))
+                .map(|hook| hook.program.clone())
+                .collect::<Vec<PathBuf>>()
+        };
+        assert_eq!(programs("/mnt/onboard/Articles"), vec![PathBuf::from("fetcher"), PathBuf::from("other")]);
+        assert_eq!(programs("/mnt/onboard/Books"), vec![PathBuf::from("fetcher")]);
+        // Neither the library's home nor the subdirectories of a hook's directory.
+        assert!(programs("/mnt/onboard").is_empty());
+        assert!(programs("/mnt/onboard/Articles/Saved").is_empty());
+    }
+
+    #[test]
+    fn test_sync_button_layout() {
+        let mut f = Fixture::new("layout", LONG_HOOK, &["Articles", "Books"]);
+        f.assert_no_sync_button(1);
+
+        // The bar of the library's home is reused, and shrinks.
+        f.select("Articles");
+        f.assert_sync_button(2);
+
+        // The subdirectories of a hook's directory don't have its hook.
+        f.select("Articles/Saved");
+        f.assert_no_sync_button(2);
+
+        // Without subdirectories, the row lists the directory and its siblings.
+        f.select("Books");
+        f.assert_sync_button(1);
+
+        let home = f.context.library.home.clone();
+        f.send(Event::SelectDirectory(home));
+        f.assert_no_sync_button(1);
+
+        f.select("Articles");
+        let (width, height) = CURRENT_DEVICE.dims;
+        let rect = rect![0, 0, height as i32, width as i32];
+        f.home.resize(rect, &f.hub, &mut RenderQueue::new(), &mut f.context);
+        assert_eq!(f.nav_bar().rect().max.x, rect.max.x);
+        f.assert_sync_button(2);
+
+        f.home.toggle_address_bar(Some(true), true, &f.hub, &mut RenderQueue::new(), &mut f.context);
+        f.assert_sync_button(2);
+
+        // The button goes away with the navigation bar.
+        f.home.toggle_navigation_bar(Some(false), true, &f.hub, &mut RenderQueue::new(), &mut f.context);
+        assert!(locate::<NavigationBar>(&f.home).is_none());
+        f.home.toggle_navigation_bar(Some(true), true, &f.hub, &mut RenderQueue::new(), &mut f.context);
+        f.assert_sync_button(2);
+    }
+
+    #[test]
+    fn test_selecting_hook_directory_does_not_run_hook() {
+        let mut f = Fixture::new("select", LONG_HOOK, &["Articles"]);
+        f.select("Articles");
+        assert!(f.fetchers().is_empty());
+
+        // Through the library menu's Toggle Select sub-menu.
+        f.select("Books");
+        let path = f.path("Articles");
+        f.send(Event::Select(EntryId::ToggleSelectDirectory(path.clone())));
+        assert_eq!(f.home.current_directory, path);
+        assert!(f.fetchers().is_empty());
+    }
+
+    #[test]
+    fn test_sync_button_runs_hook_once() {
+        let mut f = Fixture::new("run", LONG_HOOK, &["Articles"]);
+        // There's nothing to run outside of a hook's directory.
+        f.send(Event::RunHook);
+        assert!(f.fetchers().is_empty());
+
+        f.select("Articles");
+        f.tap_sync_button();
+        let fetchers = f.fetchers();
+        assert_eq!(fetchers.len(), 1);
+        let fetcher = &f.home.background_fetchers[&fetchers[0]];
+        assert!(fetcher.running);
+        assert_eq!(fetcher.full_path, f.path("Articles"));
+
+        // Tapping the button while the hook is running doesn't start a second
+        // process, and says why.
+        f.tap_sync_button();
+        assert_eq!(f.fetchers(), fetchers);
+        assert!(f.home.children().iter().any(|child| child.is::<Notification>()));
+
+        // Leaving the directory terminates the hook.
+        f.select("Books");
+        assert!(f.fetchers().is_empty());
+    }
+
+    #[test]
+    fn test_hook_runs_again_once_it_has_exited() {
+        let mut f = Fixture::new("rerun", SHORT_HOOK, &["Articles"]);
+        f.select("Articles");
+        f.tap_sync_button();
+        f.pump_until_exit();
+        let fetchers = f.fetchers();
+        assert_eq!(fetchers.len(), 1);
+        assert!(!f.home.background_fetchers[&fetchers[0]].running);
+        // The hook's sort method applies until the directory is deselected.
+        assert_eq!(f.home.sort_method, SortMethod::Added);
+
+        f.tap_sync_button();
+        assert_eq!(f.fetchers().len(), 1);
+        assert!(f.home.background_fetchers.values().all(|fetcher| fetcher.running));
+        f.pump_until_exit();
+
+        // The sort method from before the first run is restored.
+        f.select("Books");
+        f.pump();
+        assert!(f.fetchers().is_empty());
+        assert_eq!(f.home.sort_method, SortMethod::Opened);
     }
 }

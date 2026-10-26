@@ -14,11 +14,11 @@ second-column = "progress"
 
 The above chunk needs to be added after one of the `[[libraries]]` section.
 
-`path` is the path of the directory that will trigger the hook. `program` is
-the path to the executable associated with this hook. The `sort-method`,
-`reverse-order`, `first-column` and `second-column` keys are optional. When
-specified, they will override the *home*'s settings of the same name, while
-`path` is being selected.
+`path` is the path, relative to the library, of the directory the hook belongs
+to. `program` is the path to the executable associated with this hook. The
+`sort-method`, `reverse-order`, `first-column` and `second-column` keys are
+optional. When specified, they will override the *home*'s settings of the same
+name, from the moment the hook is triggered until `path` is deselected.
 
 The `import-on-exit` key is also optional and defaults to `false`. When set to
 `true`, *Plato* runs the import process as soon as `program` exits, whatever
@@ -27,11 +27,19 @@ its exit status, so that the files it put in the library without sending
 to the `[import]` settings. It has no effect in *filesystem* mode, and the
 import doesn't run when `program` is terminated because `path` was deselected.
 
-The *Toogle Select* sub-menu of the library menu can be used to trigger a hook
-when there's no imported documents in `path`. Otherwise, you can just tap the
-directory in the navigation bar. When the hook is triggered, the associated
-`program` is executed as a background process. It will receive the library path,
-directory path, wifi and online statuses (*true* or *false*) as arguments.
+Selecting `path` doesn't trigger the hook. When `path` is the current
+directory, the navigation bar shows a sync button on its right, separated from
+the directories by a vertical line: tapping it triggers the hook. The button is
+part of the navigation bar: if the latter is hidden, swipe down from the top bar
+to show it. To select `path`, tap the directory in the navigation bar, or, when
+there's no imported documents in `path`, use the *Toggle Select* sub-menu of the
+library menu.
+
+When the hook is triggered, the associated `program` is executed as a
+background process. It will receive the library path, directory path, wifi and
+online statuses (*true* or *false*) as arguments. Tapping the sync button again
+while `program` is still running doesn't start a second process; once it has
+exited, tapping the button runs it again.
 
 A fetcher can use its standard output (resp. standard input) to send events to
 (resp. receive events from) *Plato*. An event is a JSON object with a required
@@ -65,4 +73,4 @@ The events that can be read from standard input are:
 ```
 
 When a directory is deselected, *Plato* will send the `SIGTERM` signal to all
-the matching fetchers.
+the matching fetchers that are still running.

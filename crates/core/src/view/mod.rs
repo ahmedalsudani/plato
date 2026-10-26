@@ -346,6 +346,7 @@ pub enum Event {
         sort_by: Option<(SortMethod, bool)>,
     },
     CheckFetcher(u32),
+    RunHook,
     EndOfSearch,
     Finished,
     ClockTick,

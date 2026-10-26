@@ -12,6 +12,8 @@ In the library menu:
 - Select *Library → On Board*.
 - Select *Toggle Select → Articles* (the downloaded articles are saved in the hook's *path*).
 
+Then tap the sync button on the right of the navigation bar to fetch the articles.
+
 If the *Toggle Select* sub-menu is missing, [add the relevant hook](HOOKS.md).
 
 ## Build

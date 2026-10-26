@@ -15,19 +15,23 @@ use crate::context::Context;
 
 const ICON_SCALE: f32 = 1.0 / 32.0;
 
+// The icons of the `icons` directory that views can show.
+const ICON_NAMES: [&str; 46] = ["home", "search", "back", "frontlight", "frontlight-disabled", "menu",
+                                "angle-left", "angle-right", "angle-left-small", "angle-right-small",
+                                "return", "shift", "combine", "alternate", "delete-backward", "delete-forward",
+                                "move-backward", "move-backward-short", "move-forward", "move-forward-short",
+                                "close",  "check_mark-small", "check_mark", "check_mark-large", "bullet",
+                                "arrow-left", "arrow-right", "angle-down", "angle-up", "crop", "toc", "font_family",
+                                "font_size", "font_weight", "line_height", "align-justify", "align-left", "align-right",
+                                "align-center", "margin", "plug", "cover", "enclosed_menu", "contrast", "gray",
+                                "sync"];
+
 lazy_static! {
     pub static ref ICONS_PIXMAPS: FxHashMap<&'static str, Pixmap> = {
         let mut m = FxHashMap::default();
         let scale = scale_by_dpi_raw(ICON_SCALE, CURRENT_DEVICE.dpi);
         let dir = Path::new("icons");
-        for name in ["home", "search", "back", "frontlight", "frontlight-disabled", "menu",
-                     "angle-left", "angle-right", "angle-left-small", "angle-right-small",
-                     "return", "shift", "combine", "alternate", "delete-backward", "delete-forward",
-                     "move-backward", "move-backward-short", "move-forward", "move-forward-short",
-                     "close",  "check_mark-small", "check_mark", "check_mark-large", "bullet",
-                     "arrow-left", "arrow-right", "angle-down", "angle-up", "crop", "toc", "font_family",
-                     "font_size", "font_weight", "line_height", "align-justify", "align-left", "align-right",
-                     "align-center", "margin", "plug", "cover", "enclosed_menu", "contrast", "gray"].iter().cloned() {
+        for name in ICON_NAMES.iter().cloned() {
             let path = dir.join(&format!("{}.svg", name));
             let doc = PdfOpener::new().and_then(|o| o.open(path)).unwrap();
             let pixmap = doc.page(0).and_then(|p| p.pixmap(scale, 1)).unwrap();
@@ -174,5 +178,28 @@ impl View for Icon {
 
     fn id(&self) -> Id {
         self.id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use crate::document::pdf::PdfOpener;
+    use super::{ICON_NAMES, ICON_SCALE};
+
+    #[test]
+    fn test_icons_load() {
+        // The pixmaps are loaded the first time an icon is shown: a missing or
+        // unreadable icon would make the application panic then.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../icons");
+        let opener = PdfOpener::new().unwrap();
+        for name in ICON_NAMES {
+            let doc = opener.open(dir.join(format!("{}.svg", name)))
+                            .unwrap_or_else(|| panic!("can't open {}", name));
+            let pixmap = doc.page(0).and_then(|p| p.pixmap(ICON_SCALE, 1))
+                            .unwrap_or_else(|| panic!("can't render {}", name));
+            assert!(pixmap.width > 0 && pixmap.height > 0, "{} is empty", name);
+        }
+        assert!(ICON_NAMES.contains(&"sync"));
     }
 }
