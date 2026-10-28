@@ -17,6 +17,7 @@ pub struct Button {
     event: Event,
     text: String,
     align: Align,
+    border: bool,
     active: bool,
     pub disabled: bool,
 }
@@ -30,6 +31,7 @@ impl Button {
             event,
             text,
             align: Align::Center,
+            border: true,
             active: false,
             disabled: false,
         }
@@ -42,6 +44,12 @@ impl Button {
 
     pub fn align(mut self, align: Align) -> Button {
         self.align = align;
+        self
+    }
+
+    // Without a border, the button is a flat cell, like the icons of a bar.
+    pub fn border(mut self, border: bool) -> Button {
+        self.border = border;
         self
     }
 }
@@ -84,14 +92,18 @@ impl View for Button {
         };
         let foreground = if self.disabled { scheme[2] } else { scheme[1] };
 
-        let border_radius = scale_by_dpi(BORDER_RADIUS_LARGE, dpi) as i32;
-        let border_thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as u16;
+        if self.border {
+            let border_radius = scale_by_dpi(BORDER_RADIUS_LARGE, dpi) as i32;
+            let border_thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as u16;
 
-        fb.draw_rounded_rectangle_with_border(&self.rect,
-                                              &CornerSpec::Uniform(border_radius),
-                                              &BorderSpec { thickness: border_thickness,
-                                                            color: foreground },
-                                              &scheme[0]);
+            fb.draw_rounded_rectangle_with_border(&self.rect,
+                                                  &CornerSpec::Uniform(border_radius),
+                                                  &BorderSpec { thickness: border_thickness,
+                                                                color: foreground },
+                                                  &scheme[0]);
+        } else {
+            fb.draw_rectangle(&self.rect, scheme[0]);
+        }
 
         let font = font_from_style(fonts, &NORMAL_STYLE, dpi);
         let x_height = font.x_heights.0 as i32;
