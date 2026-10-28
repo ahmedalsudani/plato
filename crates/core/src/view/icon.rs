@@ -16,11 +16,11 @@ use crate::context::Context;
 const ICON_SCALE: f32 = 1.0 / 32.0;
 
 // The icons of the `icons` directory that views can show.
-const ICON_NAMES: [&str; 46] = ["home", "search", "back", "frontlight", "frontlight-disabled", "menu",
+const ICON_NAMES: [&str; 47] = ["home", "search", "back", "frontlight", "frontlight-disabled", "menu",
                                 "angle-left", "angle-right", "angle-left-small", "angle-right-small",
                                 "return", "shift", "combine", "alternate", "delete-backward", "delete-forward",
                                 "move-backward", "move-backward-short", "move-forward", "move-forward-short",
-                                "close",  "check_mark-small", "check_mark", "check_mark-large", "bullet",
+                                "close", "close-small", "check_mark-small", "check_mark", "check_mark-large", "bullet",
                                 "arrow-left", "arrow-right", "angle-down", "angle-up", "crop", "toc", "font_family",
                                 "font_size", "font_weight", "line_height", "align-justify", "align-left", "align-right",
                                 "align-center", "margin", "plug", "cover", "enclosed_menu", "contrast", "gray",

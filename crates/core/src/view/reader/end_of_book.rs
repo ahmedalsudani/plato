@@ -1,17 +1,17 @@
 use std::path::{Path, PathBuf};
 use crate::device::CURRENT_DEVICE;
 use crate::framebuffer::Framebuffer;
-use crate::geom::{Rectangle, BorderSpec, CycleDir};
+use crate::geom::{Rectangle, BorderSpec, CycleDir, small_half, big_half};
 use crate::font::{Fonts, font_from_style, NORMAL_STYLE};
 use crate::metadata::Info;
 use crate::view::{View, Event, Hub, Bus, Id, ID_FEEDER, RenderQueue, ViewId, Align};
-use crate::view::{BIG_BAR_HEIGHT, THICKNESS_MEDIUM};
+use crate::view::{THICKNESS_MEDIUM, THICKNESS_LARGE};
 use crate::view::label::Label;
 use crate::view::button::Button;
 use crate::view::icon::Icon;
 use crate::view::filler::Filler;
 use crate::gesture::GestureEvent;
-use crate::color::{BLACK, WHITE, SEPARATOR_NORMAL};
+use crate::color::{BLACK, WHITE, SEPARATOR_NORMAL, SEPARATOR_STRONG};
 use crate::unit::scale_by_dpi;
 use crate::context::Context;
 
@@ -44,40 +44,49 @@ fn book_label(dir: CycleDir, info: Option<&Info>) -> String {
     }
 }
 
-// The icon of the chevron in front of a book's title, pointing towards the book.
+// The icon of the chevron in front of a book's title, pointing towards the
+// book. It's as small as the marks of a menu's entries.
 fn chevron_name(dir: CycleDir) -> &'static str {
     match dir {
-        CycleDir::Previous => "angle-left",
-        CycleDir::Next => "angle-right",
+        CycleDir::Previous => "angle-left-small",
+        CycleDir::Next => "angle-right-small",
     }
 }
 
-// The sizes, in pixels, the window's layout depends on.
+// The sizes, in pixels, the window's layout depends on: the ones of a menu.
 #[derive(Debug, Copy, Clone)]
 struct Metrics {
-    row_height: i32,    // Height of a row, the one of the tool bar's rows.
-    thickness: i32,     // Thickness of the window's border and of the separators.
-    padding: i32,
-    label_width: i32,   // Width of the library button's label.
-    title_width: i32,   // Width of the title.
+    entry_height: i32,  // Height of a row, the one of a menu's entries.
+    padding: i32,       // Padding of a menu's entries, twice the width of a gutter.
+    em: i32,            // Padding of the labels and buttons.
+    thickness: i32,     // Thickness of the separators.
+    border: i32,        // Thickness of the window's border.
+    label_width: i32,   // Width of the widest of the window's title and the library's label.
+    text_width: i32,    // Width of the widest text of the rows.
 }
 
 impl Metrics {
-    fn new(fonts: &mut Fonts) -> Metrics {
+    fn new(fonts: &mut Fonts, labels: &[String]) -> Metrics {
         let dpi = CURRENT_DEVICE.dpi;
         let font = font_from_style(fonts, &NORMAL_STYLE, dpi);
-        let thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as i32;
+        let entry_height = font.x_heights.0 as i32 * 5;
+        let em = font.em() as i32;
+        let mut width = |text: &str| font.plan(text, None, None).width;
+        let label_width = width(LABEL_TITLE).max(width(LABEL_LIBRARY));
+        let text_width = labels.iter().map(|label| width(label)).fold(label_width, i32::max);
         Metrics {
-            row_height: scale_by_dpi(BIG_BAR_HEIGHT, dpi) as i32 - thickness,
-            thickness,
-            padding: font.em() as i32,
-            label_width: font.plan(LABEL_LIBRARY, None, None).width,
-            title_width: font.plan(LABEL_TITLE, None, None).width,
+            entry_height,
+            padding: 4 * em,
+            em,
+            thickness: scale_by_dpi(THICKNESS_MEDIUM, dpi) as i32,
+            border: scale_by_dpi(THICKNESS_LARGE, dpi) as i32,
+            label_width,
+            text_width,
         }
     }
 }
 
-// The row of the previous or next book: the square cell of the chevron on the
+// The row of the previous or next book: the chevron in a narrow gutter on the
 // left, a vertical line, then the book's title. The whole row opens the book.
 #[derive(Debug, Copy, Clone)]
 struct BookRow {
@@ -88,11 +97,13 @@ struct BookRow {
 }
 
 impl BookRow {
-    fn new(rect: Rectangle, thickness: i32) -> BookRow {
-        let side = rect.height() as i32;
-        let chevron = rect![rect.min.x, rect.min.y, rect.min.x + side, rect.max.y];
+    // A button keeps its text an em from its edges, half of it on the left:
+    // the title reaches into the right gutter by the other half, so that its
+    // text stops at the gutter, like the text of a menu's entry.
+    fn new(rect: Rectangle, gutter: i32, thickness: i32, em: i32) -> BookRow {
+        let chevron = rect![rect.min.x, rect.min.y, rect.min.x + gutter, rect.max.y];
         let separator = rect![chevron.max.x, rect.min.y, chevron.max.x + thickness, rect.max.y];
-        let title = rect![separator.max.x, rect.min.y, rect.max.x, rect.max.y];
+        let title = rect![separator.max.x, rect.min.y, rect.max.x - gutter + em - em / 2, rect.max.y];
         BookRow { rect, chevron, separator, title }
     }
 }
@@ -100,87 +111,79 @@ impl BookRow {
 #[derive(Debug)]
 struct Layout {
     rect: Rectangle,
+    header: Rectangle,      // The window's title, left of the close icon.
+    close: Rectangle,       // The right gutter of the top row.
+    lines: [Rectangle; 2],  // The lines below the top row and above the library's row.
+    books: [BookRow; 2],    // The rows of the previous and next books.
     library: Rectangle,
-    close: Rectangle,
-    title: Option<Rectangle>,   // None when the title doesn't fit.
-    separators: [Rectangle; 2], // The vertical lines of the top row.
-    lines: [Rectangle; 2],      // The horizontal lines above the rows of the books.
-    books: [BookRow; 2],        // The rows of the previous and next books.
+    text_x: i32,            // Where the texts of all the rows start.
 }
 
 impl Layout {
-    // The rectangles of the window's children, in their order. The title,
-    // when there's one, comes after them.
+    // The rectangles of the window's children, in their order.
     fn children(&self) -> Vec<Rectangle> {
-        let mut rects = vec![self.library, self.separators[0], self.separators[1], self.close];
-        for (line, book) in self.lines.iter().zip(self.books.iter()) {
-            rects.extend([*line, book.chevron, book.separator, book.title]);
+        let mut rects = vec![self.header, self.close, self.lines[0]];
+        for book in &self.books {
+            rects.extend([book.chevron, book.separator, book.title]);
         }
+        rects.extend([self.lines[1], self.library]);
         rects
     }
 }
 
 // Centers the window on a display of the given dimensions. Inside its border,
-// three rows as tall as the tool bar's, separated by horizontal lines. The top
-// row holds the library button on the left and the close icon, in a square
-// cell, on the right, each set apart by a vertical line, and the title,
-// centered, if it fits between them. Below it, the rows of the previous and
-// next books.
+// four rows spaced like the entries of a menu, the lines between them taking
+// their thickness from the rows they separate: the window's title, with the
+// close icon in the right gutter, a line, the rows of the previous and next
+// books, a line, and the library's row. The texts of the rows start on the
+// same column, past the gutter of the chevrons and its line, and stop at the
+// right gutter. Like a menu, the window fits its widest text without growing
+// past two thirds of the display's width, unless its title and the library's
+// label need more room.
 fn layout(dims: (u32, u32), metrics: &Metrics) -> Layout {
-    let Metrics { row_height, thickness, padding, label_width, title_width } = *metrics;
+    let Metrics { entry_height, padding, em, thickness, border, label_width, text_width } = *metrics;
     let (width, height) = (dims.0 as i32, dims.1 as i32);
+    let gutter = padding / 2;
+    // From the inside of the border to the texts: the gutter of the chevrons,
+    // their line and the padding of a button.
+    let indent = gutter + thickness + em / 2;
 
-    // The window is as wide in both orientations, unless the top row needs
-    // more room. The title keeps the same distance to both sides of the
-    // window, the one of the widest cell and its line.
-    let library_width = label_width + 2 * padding;
-    let title_inset = library_width.max(row_height) + thickness;
-    let top_row_width = 2 * (thickness + title_inset) + title_width + padding;
-    let window_width = (5 * width.min(height) / 6).max(top_row_width)
-                                                  .min(width - 2 * padding);
-    let window_height = 3 * row_height + 4 * thickness;
+    let fit = |text_width: i32| 2 * border + indent + text_width + gutter;
+    let window_width = fit(text_width).min(2 * width / 3)
+                                      .max(fit(label_width))
+                                      .min(width);
+    let window_height = 4 * entry_height + 2 * border;
     let dx = (width - window_width) / 2;
     let dy = (height - window_height) / 2;
     let rect = rect![dx, dy, dx + window_width, dy + window_height];
-    let inner = rect![rect.min.x + thickness, rect.min.y + thickness,
-                      rect.max.x - thickness, rect.max.y - thickness];
+    let inner = rect![rect.min.x + border, rect.min.y + border,
+                      rect.max.x - border, rect.max.y - border];
 
-    let (min_y, max_y) = (inner.min.y, inner.min.y + row_height);
-    let close = rect![inner.max.x - row_height, min_y, inner.max.x, max_y];
-
-    // The library button shrinks when its label doesn't fit the display,
-    // keeping the vertical lines apart.
-    let library_width = library_width.min(close.min.x - 2 * thickness - padding - inner.min.x);
-    let library = rect![inner.min.x, min_y, inner.min.x + library_width, max_y];
-
-    let separators = [rect![library.max.x, min_y, library.max.x + thickness, max_y],
-                      rect![close.min.x - thickness, min_y, close.min.x, max_y]];
-
-    let title = if inner.width() as i32 - 2 * title_inset >= title_width + padding {
-        Some(rect![inner.min.x + title_inset, min_y, inner.max.x - title_inset, max_y])
-    } else {
-        None
-    };
-
-    let lines = [0, 1].map(|i| {
-        let min_y = inner.min.y + (i + 1) * row_height + i * thickness;
-        rect![inner.min.x, min_y, inner.max.x, min_y + thickness]
+    // The top of the row of the given index.
+    let row_y = |index: i32| inner.min.y + index * entry_height;
+    let lines = [1, 3].map(|index| {
+        let y = row_y(index);
+        rect![inner.min.x, y - small_half(thickness), inner.max.x, y + big_half(thickness)]
     });
 
-    let books = lines.map(|line| {
-        BookRow::new(rect![inner.min.x, line.max.y, inner.max.x, line.max.y + row_height], thickness)
-    });
+    let header = rect![inner.min.x, inner.min.y, inner.max.x - gutter, lines[0].min.y];
+    let close = rect![header.max.x, inner.min.y, inner.max.x, lines[0].min.y];
+    let books = [rect![inner.min.x, lines[0].max.y, inner.max.x, row_y(2)],
+                 rect![inner.min.x, row_y(2), inner.max.x, lines[1].min.y]]
+                .map(|rect| BookRow::new(rect, gutter, thickness, em));
+    let library = rect![inner.min.x, lines[1].max.y, inner.max.x, inner.max.y];
 
-    Layout { rect, library, close, title, separators, lines, books }
+    Layout { rect, header, close, lines, books, library, text_x: inner.min.x + indent }
 }
 
 // Shown when a book is finished: opens the previous or next book of the home
 // view the book was opened from, or goes back to the library. It's drawn like
-// the reader's tool bar, in a plain window.
+// a menu, in a window with square corners.
 pub struct EndOfBook {
     id: Id,
     rect: Rectangle,
     children: Vec<Box<dyn View>>,
+    metrics: Metrics,
     // The rows of the previous and next books, when there's a book to open.
     books: [Option<Rectangle>; 2],
 }
@@ -189,30 +192,27 @@ impl EndOfBook {
     pub fn new(previous: Option<&Info>, next: Option<&Info>, context: &mut Context) -> EndOfBook {
         let id = ID_FEEDER.next();
         let mut children = Vec::new();
-        let metrics = Metrics::new(&mut context.fonts);
-        let Layout { rect, library, close, title, separators, lines, books } = layout(context.display.dims, &metrics);
+        let infos = [previous, next];
+        let labels = [0, 1].map(|index| book_label(DIRS[index], infos[index]));
+        let metrics = Metrics::new(&mut context.fonts, &labels);
+        let Layout { rect, header, close, lines, books, library, text_x } = layout(context.display.dims, &metrics);
+        let sep_color = if context.fb.monochrome() { SEPARATOR_STRONG } else { SEPARATOR_NORMAL };
         let mut rows = [None; 2];
 
-        // The children come in the order of Layout::children.
-        let button_library = Button::new(library, Event::Back, LABEL_LIBRARY.to_string())
-                                    .border(false);
-        children.push(Box::new(button_library) as Box<dyn View>);
+        // The children come in the order of Layout::children. The texts are
+        // offset from the left of their cells to start on the same column.
+        let label = Label::new(header, LABEL_TITLE.to_string(), Align::Left(text_x - header.min.x));
+        children.push(Box::new(label) as Box<dyn View>);
 
-        for separator in separators {
-            let filler = Filler::new(separator, SEPARATOR_NORMAL);
-            children.push(Box::new(filler) as Box<dyn View>);
-        }
-
-        let close_icon = Icon::new("close", close, Event::Close(ViewId::EndOfBook));
+        let close_icon = Icon::new("close-small", close, Event::Close(ViewId::EndOfBook));
         children.push(Box::new(close_icon) as Box<dyn View>);
 
-        for (index, (dir, info)) in DIRS.into_iter().zip([previous, next]).enumerate() {
-            let row = books[index];
-            let line = Filler::new(lines[index], SEPARATOR_NORMAL);
-            children.push(Box::new(line) as Box<dyn View>);
+        children.push(Box::new(Filler::new(lines[0], sep_color)) as Box<dyn View>);
 
-            // A missing book leaves the cell of its chevron empty, like the
-            // page arrows of the bottom bar.
+        for (index, ((dir, info), label)) in DIRS.into_iter().zip(infos).zip(labels).enumerate() {
+            let row = books[index];
+
+            // A missing book leaves the gutter of its chevron empty.
             if info.is_some() {
                 let icon = Icon::new(chevron_name(dir), row.chevron, Event::Book(dir));
                 children.push(Box::new(icon) as Box<dyn View>);
@@ -222,26 +222,29 @@ impl EndOfBook {
                 children.push(Box::new(filler) as Box<dyn View>);
             }
 
-            let separator = Filler::new(row.separator, SEPARATOR_NORMAL);
+            let separator = Filler::new(row.separator, sep_color);
             children.push(Box::new(separator) as Box<dyn View>);
 
             // The button draws as much of the title as fits, followed by an ellipsis.
-            let button = Button::new(row.title, Event::Book(dir), book_label(dir, info))
+            let button = Button::new(row.title, Event::Book(dir), label)
                                 .border(false)
-                                .align(Align::Left(metrics.padding / 2))
+                                .align(Align::Left(text_x - row.title.min.x))
                                 .disabled(info.is_none());
             children.push(Box::new(button) as Box<dyn View>);
         }
 
-        if let Some(title) = title {
-            let label = Label::new(title, LABEL_TITLE.to_string(), Align::Center);
-            children.push(Box::new(label) as Box<dyn View>);
-        }
+        children.push(Box::new(Filler::new(lines[1], sep_color)) as Box<dyn View>);
+
+        let button_library = Button::new(library, Event::Back, LABEL_LIBRARY.to_string())
+                                    .border(false)
+                                    .align(Align::Left(text_x - library.min.x));
+        children.push(Box::new(button_library) as Box<dyn View>);
 
         EndOfBook {
             id,
             rect,
             children,
+            metrics,
             books: rows,
         }
     }
@@ -255,7 +258,8 @@ impl View for EndOfBook {
                 true
             },
             // The chevrons and the titles take the taps on them: the line
-            // between them is what's left of a book's row.
+            // between them and the right gutter are what's left of a book's
+            // row.
             Event::Gesture(GestureEvent::Tap(center)) => {
                 if let Some(index) = self.books.iter().position(|book| book.map_or(false, |rect| rect.includes(center))) {
                     bus.push_back(Event::Book(DIRS[index]));
@@ -268,31 +272,23 @@ impl View for EndOfBook {
     }
 
     fn render(&self, fb: &mut dyn Framebuffer, _rect: Rectangle, _fonts: &mut Fonts) {
-        let dpi = CURRENT_DEVICE.dpi;
-        let thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as u16;
-
         fb.draw_rectangle(&self.rect, WHITE);
-        fb.draw_rectangle_outline(&self.rect, &BorderSpec { thickness, color: BLACK });
+        fb.draw_rectangle_outline(&self.rect, &BorderSpec { thickness: self.metrics.border as u16,
+                                                            color: BLACK });
     }
 
     fn resize(&mut self, _rect: Rectangle, hub: &Hub, rq: &mut RenderQueue, context: &mut Context) {
-        let metrics = Metrics::new(&mut context.fonts);
-        let layout = layout(context.display.dims, &metrics);
-        // The children keep their state: the row of a missing book stays disabled.
-        let rects = layout.children();
-        for (child, rect) in self.children.iter_mut().zip(rects.iter()) {
-            child.resize(*rect, hub, rq, context);
+        let layout = layout(context.display.dims, &self.metrics);
+        // The children keep their state: the row of a missing book stays
+        // disabled. The texts keep their column, which is as far from the left
+        // of their cells on any display.
+        for (child, rect) in self.children.iter_mut().zip(layout.children()) {
+            child.resize(rect, hub, rq, context);
         }
         for (book, row) in self.books.iter_mut().zip(layout.books.iter()) {
             if let Some(rect) = book {
                 *rect = row.rect;
             }
-        }
-        // The title, last, comes and goes with the room it has.
-        self.children.truncate(rects.len());
-        if let Some(title) = layout.title {
-            let label = Label::new(title, LABEL_TITLE.to_string(), Align::Center);
-            self.children.push(Box::new(label) as Box<dyn View>);
         }
         self.rect = layout.rect;
     }
@@ -341,20 +337,19 @@ mod tests {
     use crate::framebuffer::{Framebuffer, Pixmap};
     use crate::frontlight::{Frontlight, LightLevels};
     use crate::gesture::GestureEvent;
-    use crate::geom::{Point, Rectangle, CycleDir, Dir};
+    use crate::geom::{Point, Rectangle, CycleDir, Dir, small_half, big_half};
     use crate::library::Library;
     use crate::lightsensor::LightSensor;
     use crate::metadata::{Info, FileInfo};
-    use crate::settings::{Settings, ReaderSettings, LibraryMode};
-    use crate::unit::scale_by_dpi;
-    use crate::view::{View, Event, Hub, ViewId, RenderQueue, handle_event};
-    use crate::view::{BIG_BAR_HEIGHT, THICKNESS_MEDIUM};
+    use crate::settings::{Settings, LibraryMode};
+    use crate::view::{View, Event, Hub, ViewId, RenderQueue, EntryKind, EntryId, handle_event};
     use crate::view::button::Button;
     use crate::view::filler::Filler;
     use crate::view::icon::Icon;
     use crate::view::label::Label;
-    use super::super::tool_bar::ToolBar;
+    use crate::view::menu::{Menu, MenuKind};
     use super::{neighbor_book, book_label, layout, Layout, BookRow, Metrics, EndOfBook};
+    use super::{DIRS, LABEL_TITLE, LABEL_LIBRARY};
 
     fn books(paths: &[&str]) -> Vec<PathBuf> {
         paths.iter().map(PathBuf::from).collect()
@@ -458,68 +453,82 @@ mod tests {
 
     // Sizes at 300 DPI.
     const METRICS: Metrics = Metrics {
-        row_height: 161,
+        entry_height: 90,
+        padding: 136,
+        em: 34,
         thickness: 2,
-        padding: 38,
-        label_width: 110,
-        title_width: 200,
+        border: 3,
+        label_width: 180,
+        text_width: 400,
     };
 
     // The inside of the window, within its border.
-    fn inside(rect: &Rectangle, thickness: i32) -> Rectangle {
-        rect![rect.min.x + thickness, rect.min.y + thickness,
-              rect.max.x - thickness, rect.max.y - thickness]
+    fn inside(rect: &Rectangle, border: i32) -> Rectangle {
+        rect![rect.min.x + border, rect.min.y + border,
+              rect.max.x - border, rect.max.y - border]
+    }
+
+    // The width of a window fitted to a text of the given width: a menu's
+    // padding and border around the text, the line of the chevrons' gutter
+    // and the padding of a button after it.
+    fn fitted_width(metrics: &Metrics, text_width: i32) -> i32 {
+        let Metrics { padding, em, thickness, border, .. } = *metrics;
+        2 * border + padding + text_width + thickness + em / 2
     }
 
     // Checks the invariants of a layout and returns it.
     fn check_layout(dims: (u32, u32), metrics: &Metrics) -> Layout {
         let layout = layout(dims, metrics);
-        let Layout { rect, library, close, title, separators, lines, books } = &layout;
-        let Metrics { row_height, thickness, .. } = *metrics;
+        let Layout { rect, header, close, lines, books, library, text_x } = &layout;
+        let Metrics { entry_height, padding, em, thickness, border, label_width, .. } = *metrics;
+        let gutter = padding / 2;
         let screen = rect![0, 0, dims.0 as i32, dims.1 as i32];
 
+        // The window is centered on the display.
         assert!(screen.contains(rect), "{} isn't inside {}", rect, screen);
         assert!((rect.min.x - (screen.max.x - rect.max.x)).abs() <= 1);
         assert!((rect.min.y - (screen.max.y - rect.max.y)).abs() <= 1);
 
-        // Three rows and the two lines between them fill the inside of the
-        // window.
-        let inner = inside(rect, thickness);
-        assert_eq!(inner.height() as i32, 3 * row_height + 2 * thickness);
+        // Four rows as tall as a menu's entries fill the inside of the border.
+        let inner = inside(rect, border);
+        assert_eq!(inner.height() as i32, 4 * entry_height);
+        let row_y = |index: i32| inner.min.y + index * entry_height;
 
-        // The top row: the library button at the top left, opposite the close
-        // icon's square cell, each set apart by a vertical line, and the title
-        // between the lines.
-        assert_eq!(library.min, inner.min);
-        assert_eq!(library.height() as i32, row_height);
-        assert_eq!(*close, rect![inner.max.x - row_height, inner.min.y, inner.max.x, inner.min.y + row_height]);
-        let [left, right] = *separators;
-        assert_eq!(left, rect![library.max.x, library.min.y, library.max.x + thickness, library.max.y]);
-        assert_eq!(right, rect![close.min.x - thickness, close.min.y, close.min.x, close.max.y]);
-        assert!(left.max.x < right.min.x, "{} touches {}", left, right);
-        if let Some(title) = title {
-            assert!(left.max.x <= title.min.x && title.max.x <= right.min.x);
-            assert_eq!((title.min.y, title.max.y), (close.min.y, close.max.y));
+        // The lines below the top row and above the library's row span the
+        // inside of the window, centered on the bounds of the rows they
+        // separate, like a menu's.
+        for (line, index) in lines.iter().zip([1, 3]) {
+            let y = row_y(index);
+            assert_eq!(*line, rect![inner.min.x, y - small_half(thickness), inner.max.x, y + big_half(thickness)]);
         }
 
-        // Below it, the row of the previous book above the one of the next,
-        // each under a horizontal line across the inside of the window.
-        let mut min_y = close.max.y;
-        for (line, book) in lines.iter().zip(books.iter()) {
-            assert_eq!(*line, rect![inner.min.x, min_y, inner.max.x, min_y + thickness]);
-            assert_eq!(book.rect, rect![inner.min.x, line.max.y, inner.max.x, line.max.y + row_height]);
-            min_y = book.rect.max.y;
-            // The chevron's square cell, a vertical line, then the title.
-            let BookRow { rect: row, chevron, separator, title: book_title } = *book;
-            assert_eq!(chevron, rect![row.min.x, row.min.y, row.min.x + row_height, row.max.y]);
-            assert_eq!(separator, rect![chevron.max.x, row.min.y, chevron.max.x + thickness, row.max.y]);
-            assert_eq!(book_title, rect![separator.max.x, row.min.y, row.max.x, row.max.y]);
+        // The top row: the title, then the close icon in the right gutter.
+        assert_eq!(*header, rect![inner.min.x, inner.min.y, inner.max.x - gutter, lines[0].min.y]);
+        assert_eq!(*close, rect![header.max.x, inner.min.y, inner.max.x, lines[0].min.y]);
+
+        // The rows of the books, with no line between them: the gutter of
+        // the chevron, a vertical line as tall as the row, then the title,
+        // whose text stops at the right gutter.
+        assert_eq!(books[0].rect, rect![inner.min.x, lines[0].max.y, inner.max.x, row_y(2)]);
+        assert_eq!(books[1].rect, rect![inner.min.x, row_y(2), inner.max.x, lines[1].min.y]);
+        for BookRow { rect: row, chevron, separator, title } in books {
+            assert_eq!(*chevron, rect![row.min.x, row.min.y, row.min.x + gutter, row.max.y]);
+            assert_eq!(*separator, rect![chevron.max.x, row.min.y, chevron.max.x + thickness, row.max.y]);
+            assert_eq!((title.min.x, title.min.y, title.max.y), (separator.max.x, row.min.y, row.max.y));
+            assert_eq!(*text_x + title.width() as i32 - em, close.min.x);
         }
-        assert_eq!(min_y, inner.max.y);
+
+        // The library's row, at the bottom.
+        assert_eq!(*library, rect![inner.min.x, lines[1].max.y, inner.max.x, inner.max.y]);
+
+        // The texts start on the column of the titles, a button's padding
+        // past the vertical lines. The window's title and the library's
+        // label fit before the right gutter.
+        assert_eq!(*text_x, books[0].title.min.x + em / 2);
+        assert!(text_x + label_width <= close.min.x);
 
         // The children stay off the border and off each other.
-        let mut rects = layout.children();
-        rects.extend(*title);
+        let rects = layout.children();
         for (index, a) in rects.iter().enumerate() {
             assert!(inner.contains(a), "{} isn't inside {}", a, inner);
             for b in &rects[index + 1..] {
@@ -532,49 +541,37 @@ mod tests {
 
     #[test]
     fn test_layout_portrait_and_landscape() {
-        let portrait = check_layout((1072, 1448), &METRICS);
-        let landscape = check_layout((1448, 1072), &METRICS);
-        // The window has the same size in both orientations.
-        assert_eq!(portrait.rect.width(), landscape.rect.width());
-        assert_eq!(portrait.rect.height(), landscape.rect.height());
-        for Layout { rect, library, title, books, .. } in [portrait, landscape] {
-            assert_eq!(library.width() as i32, METRICS.label_width + 2 * METRICS.padding);
-            // The title is centered on the window.
-            let title = title.expect("no title");
-            assert_eq!(title.min.x - rect.min.x, rect.max.x - title.max.x);
-            assert!(title.width() as i32 >= METRICS.title_width + METRICS.padding);
-            // The rows have room for long titles.
+        // Short titles: the window fits them, and is as wide in both
+        // orientations.
+        for dims in [(1072, 1448), (1448, 1072)] {
+            let Layout { rect, .. } = check_layout(dims, &METRICS);
+            assert_eq!(rect.width() as i32, fitted_width(&METRICS, METRICS.text_width));
+            assert_eq!(rect.height() as i32, 4 * METRICS.entry_height + 2 * METRICS.border);
+        }
+    }
+
+    #[test]
+    fn test_layout_long_titles() {
+        // The window grows to two thirds of the display's width, like a
+        // menu, and the titles are too long for their buttons.
+        let metrics = Metrics { text_width: 2000, .. METRICS };
+        for dims in [(1072, 1448), (1448, 1072)] {
+            let Layout { rect, books, .. } = check_layout(dims, &metrics);
+            assert_eq!(rect.width() as i32, 2 * dims.0 as i32 / 3);
             for book in books {
-                assert!(book.title.width() as i32 >= 2 * rect.width() as i32 / 3);
+                assert!((book.title.width() as i32) - metrics.em < metrics.text_width);
             }
         }
     }
 
     #[test]
-    fn test_layout_top_row() {
-        let Layout { library, title, close, separators, lines, .. } = check_layout((1072, 1448), &METRICS);
-        // From left to right: the library button, a line, the title, a line
-        // and the close icon, all above the first horizontal line.
-        let cells = [library, separators[0], title.unwrap(), separators[1], close];
-        for pair in cells.windows(2) {
-            assert!(pair[0].max.x <= pair[1].min.x, "{} isn't left of {}", pair[0], pair[1]);
-        }
-        for rect in cells {
-            assert_eq!(rect.max.y, lines[0].min.y);
-        }
-    }
-
-    #[test]
     fn test_layout_narrow_display() {
-        // The labels don't fit: the window and the library button shrink,
-        // and the title goes away.
-        let metrics = Metrics { label_width: 400, title_width: 300, .. METRICS };
-        let Layout { rect, library, title, separators, .. } = check_layout((600, 800), &metrics);
-        assert_eq!(rect.width() as i32, 600 - 2 * metrics.padding);
-        assert!((library.width() as i32) < metrics.label_width + 2 * metrics.padding);
-        assert!(title.is_none());
-        // The vertical lines of the top row don't merge.
-        assert_eq!(separators[1].min.x - separators[0].max.x, metrics.padding);
+        // Two thirds of the display's width are too narrow for the window's
+        // title: the window grows to fit it, but not the books' titles.
+        let metrics = Metrics { label_width: 600, text_width: 2000, .. METRICS };
+        let Layout { rect, .. } = check_layout((800, 600), &metrics);
+        assert_eq!(rect.width() as i32, fitted_width(&metrics, metrics.label_width));
+        assert!(rect.width() as i32 > 2 * 800 / 3);
     }
 
     // A context on a display of the given dimensions, with the fonts of the
@@ -615,6 +612,12 @@ mod tests {
             let (captured, events) = self.handle(view, &Event::Gesture(GestureEvent::Tap(pt)));
             assert!(captured, "the tap at {:?} went through", pt);
             events
+        }
+
+        // The width of `text` in the window's font.
+        fn text_width(&mut self, text: &str) -> i32 {
+            let font = font_from_style(&mut self.context.fonts, &NORMAL_STYLE, CURRENT_DEVICE.dpi);
+            font.plan(text, None, None).width
         }
     }
 
@@ -665,19 +668,30 @@ mod tests {
     }
 
     #[test]
-    fn test_rows_are_as_tall_as_the_tool_bar_ones() {
-        let mut f = Fixture::new("tool-bar", (1072, 1448));
-        let metrics = Metrics::new(&mut f.context.fonts);
-        // The tool bar of a reflowable book, as tall as toggle_bars makes it.
-        let dpi = CURRENT_DEVICE.dpi;
-        let big_height = scale_by_dpi(BIG_BAR_HEIGHT, dpi) as i32;
-        let thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as i32;
-        let tool_bar = ToolBar::new(rect![0, 0, 1072, 3 * big_height - thickness],
-                                    true, None, &ReaderSettings::default());
-        // Its first row, and the line below it.
-        let (row, line) = (*tool_bar.children()[0].rect(), *tool_bar.children()[3].rect());
-        assert_eq!(metrics.row_height, row.height() as i32);
-        assert_eq!(metrics.thickness, line.height() as i32);
+    fn test_rows_match_the_menu() {
+        let mut f = Fixture::new("menu", (1072, 1448));
+        let previous = info("Dune", "dune.epub");
+        let next = info("Children of Dune", "children-of-dune.epub");
+        let view = EndOfBook::new(Some(&previous), Some(&next), &mut f.context);
+
+        // A menu of the window's texts, with a line below the first one.
+        let texts = [LABEL_TITLE, "Dune", "Children of Dune", LABEL_LIBRARY];
+        let mut entries = texts.iter().map(|text| EntryKind::Command(text.to_string(), EntryId::About))
+                               .collect::<Vec<EntryKind>>();
+        entries.insert(1, EntryKind::Separator);
+        let menu = Menu::new(rect![500, 100, 572, 160], ViewId::MainMenu, MenuKind::Contextual, entries, &mut f.context);
+        let (line, entry) = (*menu.children()[1].rect(), *menu.children()[3].rect());
+
+        // The rows are as tall as its entries, the lines and the border as
+        // thick as its own.
+        let Metrics { entry_height, thickness, border, em, .. } = view.metrics;
+        assert_eq!(entry.height() as i32, entry_height);
+        assert_eq!(line.height() as i32, thickness);
+        assert_eq!(entry.min.x - menu.rect().min.x, border);
+
+        // The window is as wide as the menu, but for the line of the
+        // chevrons' gutter and the padding of the titles after it.
+        assert_eq!(view.rect.width() as i32, menu.rect().width() as i32 + thickness + em / 2);
     }
 
     #[test]
@@ -685,24 +699,31 @@ mod tests {
         let dims = (1072, 1448);
         let mut f = Fixture::new("children", dims);
         let previous = info("Dune", "dune.epub");
-        let mut view = EndOfBook::new(Some(&previous), None, &mut f.context);
-        let expected = layout(dims, &Metrics::new(&mut f.context.fonts));
-        let title = expected.title.expect("no title");
-        let mut expected_rects = expected.children();
-        expected_rects.push(title);
-        assert_eq!(rects(&view), expected_rects);
-        assert_eq!(kinds(&view), ["button", "filler", "filler", "icon",
-                                  "filler", "icon", "filler", "button",
-                                  "filler", "filler", "filler", "button",
-                                  "label"]);
-        assert_eq!(icon(&view, 3).name, "close");
+        let next = info("Children of Dune", "children-of-dune.epub");
+        let mut view = EndOfBook::new(Some(&previous), Some(&next), &mut f.context);
+        let expected = layout(dims, &view.metrics);
+        assert_eq!(rects(&view), expected.children());
+        assert_eq!(kinds(&view), ["label", "icon", "filler",
+                                  "icon", "filler", "button",
+                                  "icon", "filler", "button",
+                                  "filler", "button"]);
+        // The icons are the small ones of the menus.
+        assert_eq!(icon(&view, 1).name, "close-small");
+        assert_eq!(icon(&view, 3).name, "angle-left-small");
+        assert_eq!(icon(&view, 6).name, "angle-right-small");
 
-        assert!(matches!(f.tap(&mut view, expected.library.center()).as_slice(), [Event::Back]));
         assert!(matches!(f.tap(&mut view, expected.close.center()).as_slice(), [Event::Close(ViewId::EndOfBook)]));
 
+        // The whole library's row goes back to the library.
+        for pt in across(&expected.library) {
+            assert!(matches!(f.tap(&mut view, pt).as_slice(), [Event::Back]), "{:?}", pt);
+        }
+
         // The title and the lines don't respond.
-        for rect in [title, expected.separators[0], expected.separators[1], expected.lines[0], expected.lines[1]] {
-            assert!(f.tap(&mut view, rect.center()).is_empty(), "{} responds", rect);
+        for rect in [expected.header, expected.lines[0], expected.lines[1]] {
+            for pt in across(&rect) {
+                assert!(f.tap(&mut view, pt).is_empty(), "the tap at {:?} responds", pt);
+            }
         }
     }
 
@@ -713,19 +734,17 @@ mod tests {
         let previous = info("Dune", "dune.epub");
         let next = info("", "children-of-dune.epub");
         let mut view = EndOfBook::new(Some(&previous), Some(&next), &mut f.context);
-        let Layout { books, .. } = layout(dims, &Metrics::new(&mut f.context.fonts));
+        let Layout { books, .. } = layout(dims, &view.metrics);
 
         // Each row starts with a chevron pointing towards its book, then a
         // line, then the title.
-        assert_eq!(kinds(&view)[4..12], ["filler", "icon", "filler", "button",
-                                         "filler", "icon", "filler", "button"]);
-        assert_eq!(icon(&view, 5).name, "angle-left");
-        assert_eq!(icon(&view, 9).name, "angle-right");
-        assert!(!button(&view, 7).disabled && !button(&view, 11).disabled);
+        assert_eq!(kinds(&view)[3..9], ["icon", "filler", "button",
+                                        "icon", "filler", "button"]);
+        assert!(!button(&view, 5).disabled && !button(&view, 8).disabled);
 
         // The chevron and the title send the same event, and so does the line
         // between them: the whole row opens the book.
-        for (dir, row) in [CycleDir::Previous, CycleDir::Next].into_iter().zip(books) {
+        for (dir, row) in DIRS.into_iter().zip(books) {
             let pts = [row.chevron.center(), row.title.center(), row.separator.center()];
             assert!(all_open(&mut f, &mut view, &pts, dir), "{:?}", dir);
             assert!(all_open(&mut f, &mut view, &across(&row.rect), dir), "{:?}", dir);
@@ -738,19 +757,19 @@ mod tests {
         let mut f = Fixture::new("missing", dims);
         let next = info("Dune", "dune.epub");
         let mut view = EndOfBook::new(None, Some(&next), &mut f.context);
-        let Layout { books, .. } = layout(dims, &Metrics::new(&mut f.context.fonts));
+        let Layout { books, .. } = layout(dims, &view.metrics);
 
         // There's no previous book: its row stays, with an empty chevron
-        // cell and a disabled title, and nothing on it responds.
-        assert_eq!(kinds(&view)[5..8], ["filler", "filler", "button"]);
-        assert!(button(&view, 7).disabled);
+        // gutter and a disabled title, and nothing on it responds.
+        assert_eq!(kinds(&view)[3..6], ["filler", "filler", "button"]);
+        assert!(button(&view, 5).disabled);
         for pt in across(&books[0].rect) {
             assert!(f.tap(&mut view, pt).is_empty(), "the tap at {:?} responds", pt);
         }
 
         // The row of the next book works.
-        assert_eq!(icon(&view, 9).name, "angle-right");
-        assert!(!button(&view, 11).disabled);
+        assert_eq!(icon(&view, 6).name, "angle-right-small");
+        assert!(!button(&view, 8).disabled);
         assert!(all_open(&mut f, &mut view, &across(&books[1].rect), CycleDir::Next));
     }
 
@@ -772,6 +791,75 @@ mod tests {
             assert!(captured && events.is_empty(), "{:?}", pt);
         }
         assert!(f.receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_width_fits_the_texts() {
+        let dims = (1072, 1448);
+        let mut f = Fixture::new("width", dims);
+        let dune = info("Dune", "dune.epub");
+        let alpha = info("Alpha: A Short First Book", "alpha.epub");
+
+        // The window fits the widest text of its rows, which can be the
+        // text of a missing book, and stays narrower than a long menu.
+        let narrow = EndOfBook::new(Some(&dune), None, &mut f.context);
+        let widest = ["End of book", "Library", "Dune", "No next book"].map(|text| f.text_width(text))
+                                                                        .into_iter().max().unwrap();
+        assert_eq!(narrow.rect.width() as i32, fitted_width(&narrow.metrics, widest));
+
+        let wide = EndOfBook::new(Some(&dune), Some(&alpha), &mut f.context);
+        let widest = f.text_width("Alpha: A Short First Book");
+        assert_eq!(wide.rect.width() as i32, fitted_width(&wide.metrics, widest));
+        assert!(narrow.rect.width() < wide.rect.width());
+        assert!((wide.rect.width() as i32) < 2 * dims.0 as i32 / 3);
+
+        // The title it fits isn't cut short: the button has room for it.
+        let title = button(&wide, 8);
+        assert_eq!(title.rect().width() as i32 - wide.metrics.em, widest);
+    }
+
+    #[test]
+    fn test_long_titles_are_truncated() {
+        let mut f = Fixture::new("truncated", (1072, 1448));
+        let title = "The Very Long Title of a Book That Goes On and On ".repeat(4);
+        let long = info(title.trim_end(), "long.epub");
+        let short = info("Dune", "dune.epub");
+        let view = EndOfBook::new(Some(&long), Some(&short), &mut f.context);
+
+        // The window is as wide as a menu can be.
+        assert_eq!(view.rect.width() as i32, 2 * 1072 / 3);
+
+        let dpi = CURRENT_DEVICE.dpi;
+        let font = font_from_style(&mut f.context.fonts, &NORMAL_STYLE, dpi);
+        let padding = font.em() as i32;
+        for (index, dir, info, truncated) in [(5, CycleDir::Previous, &long, true),
+                                              (8, CycleDir::Next, &short, false)] {
+            let rect = *view.children()[index].rect();
+            // The plan the button renders: as much of the title as fits the
+            // cell, followed by an ellipsis.
+            let label = book_label(dir, Some(info));
+            let max_width = rect.width() as i32 - padding;
+            let full = font.plan(&label, None, None);
+            let plan = font.plan(&label, Some(max_width), None);
+            assert!(plan.width <= max_width);
+            assert_eq!(full.width > max_width, truncated);
+            assert_eq!(plan.width < full.width, truncated);
+        }
+
+        // Nothing is drawn outside of the cell, and the text stops at the
+        // right gutter, below the close icon's.
+        let rect = *view.children()[5].rect();
+        let close = *view.children()[1].rect();
+        let mut pixmap = Pixmap::new(1072, 1448, 1);
+        view.children()[5].render(&mut pixmap, rect, &mut f.context.fonts);
+        for y in 0..pixmap.height {
+            for x in 0..pixmap.width {
+                let pt = pt!(x as i32, y as i32);
+                if !rect.includes(pt) || pt.x >= close.min.x {
+                    assert_eq!(pixmap.get_pixel(x, y), WHITE, "({}, {}) is outside of {}", x, y, rect);
+                }
+            }
+        }
     }
 
     // Renders the window and its children into a pixmap of the display's
@@ -797,18 +885,32 @@ mod tests {
         pixels
     }
 
+    // Checks that the texts of the rows start on the column of the layout,
+    // give or take the side bearings of their first letters.
+    fn check_texts_aligned(pixmap: &Pixmap, layout: &Layout, em: i32) {
+        let Layout { header, books, library, text_x, .. } = layout;
+        for cell in [*header, books[0].title, books[1].title, *library] {
+            let start = pixels(pixmap, &cell).into_iter()
+                                              .filter(|(_, gray)| *gray < WHITE.gray())
+                                              .map(|(pt, _)| pt.x).min().expect("no text");
+            assert!((start - text_x).abs() <= em / 4, "the text of {} starts at {}, not {}", cell, start, text_x);
+        }
+    }
+
     #[test]
     fn test_render_plain_window() {
         let dims = (1072, 1448);
         let mut f = Fixture::new("render", dims);
         let previous = info("Dune", "dune.epub");
         let view = EndOfBook::new(Some(&previous), None, &mut f.context);
-        let metrics = Metrics::new(&mut f.context.fonts);
-        let Layout { rect, library, books, .. } = layout(dims, &metrics);
+        let metrics = view.metrics;
+        let expected = layout(dims, &metrics);
+        let Layout { rect, books, library, lines, .. } = expected;
         let pixmap = render(&view, &mut f.context.fonts, dims);
-        let inner = inside(&rect, metrics.thickness);
+        let inner = inside(&rect, metrics.border);
 
-        // A black border with square corners, and nothing outside of it.
+        // A black border as thick as a menu's, with square corners, and
+        // nothing outside of it.
         for (pt, gray) in pixels(&pixmap, &rect![0, 0, dims.0 as i32, dims.1 as i32]) {
             if !rect.includes(pt) {
                 assert_eq!(gray, WHITE.gray(), "{:?} is outside of {}", pt, rect);
@@ -817,8 +919,17 @@ mod tests {
             }
         }
 
+        // The lines, the vertical ones included, are fillers of the
+        // separators' color.
+        for line in [lines[0], books[0].separator, books[1].separator, lines[1]] {
+            assert!(view.children().iter().any(|child| child.is::<Filler>() && *child.rect() == line));
+            for (pt, gray) in pixels(&pixmap, &line) {
+                assert_eq!(gray, SEPARATOR_NORMAL.gray(), "{:?} isn't on a line", pt);
+            }
+        }
+
         // The buttons are flat: the edges of their cells are white.
-        for cell in [library, books[0].title, books[1].title] {
+        for cell in [books[0].title, books[1].title, library] {
             let edges = [rect![cell.min.x, cell.min.y, cell.max.x, cell.min.y + 1],
                          rect![cell.min.x, cell.max.y - 1, cell.max.x, cell.max.y],
                          rect![cell.min.x, cell.min.y, cell.min.x + 1, cell.max.y],
@@ -836,113 +947,40 @@ mod tests {
         assert!(darkest(&books[0].title) < TEXT_NORMAL[2].gray());
         let grayed = darkest(&books[1].title);
         assert!(grayed >= TEXT_NORMAL[2].gray() && grayed < WHITE.gray(), "{}", grayed);
-    }
 
-    #[test]
-    fn test_separators() {
-        let dims = (1072, 1448);
-        let mut f = Fixture::new("separators", dims);
-        let previous = info("Dune", "dune.epub");
-        let next = info("Children of Dune", "children-of-dune.epub");
-        let view = EndOfBook::new(Some(&previous), Some(&next), &mut f.context);
-        let metrics = Metrics::new(&mut f.context.fonts);
-        let Layout { rect, separators, lines, books, .. } = layout(dims, &metrics);
-        let inner = inside(&rect, metrics.thickness);
-        let pixmap = render(&view, &mut f.context.fonts, dims);
-
-        // The vertical lines of the top row and of the rows of the books,
-        // between the chevrons and the titles, span the height of their row,
-        // as the one next to the sync button of the home view does.
-        let vertical = [(1, separators[0]), (2, separators[1]), (6, books[0].separator), (10, books[1].separator)];
-        for (_, line) in vertical {
-            assert_eq!((line.width() as i32, line.height() as i32), (metrics.thickness, metrics.row_height));
-        }
-        // The horizontal lines between the rows span the inside of the window.
-        let horizontal = [(4, lines[0]), (8, lines[1])];
-        for (_, line) in horizontal {
-            assert_eq!((line.min.x, line.max.x), (inner.min.x, inner.max.x));
-            assert_eq!(line.height() as i32, metrics.thickness);
-        }
-
-        // They're fillers of the separators' color.
-        for (index, line) in vertical.into_iter().chain(horizontal) {
-            assert!(view.children()[index].is::<Filler>());
-            assert_eq!(*view.children()[index].rect(), line);
-            for (pt, gray) in pixels(&pixmap, &line) {
-                assert_eq!(gray, SEPARATOR_NORMAL.gray(), "{:?} isn't on a line", pt);
-            }
-        }
-    }
-
-    #[test]
-    fn test_long_titles_are_truncated() {
-        let mut f = Fixture::new("truncated", (1072, 1448));
-        let title = "The Very Long Title of a Book That Goes On and On ".repeat(4);
-        let long = info(title.trim_end(), "long.epub");
-        let short = info("Dune", "dune.epub");
-        let view = EndOfBook::new(Some(&long), Some(&short), &mut f.context);
-
-        let dpi = CURRENT_DEVICE.dpi;
-        let font = font_from_style(&mut f.context.fonts, &NORMAL_STYLE, dpi);
-        let padding = font.em() as i32;
-        for (index, dir, info, truncated) in [(7, CycleDir::Previous, &long, true),
-                                              (11, CycleDir::Next, &short, false)] {
-            let rect = *view.children()[index].rect();
-            // The plan the button renders: as much of the title as fits the
-            // cell, followed by an ellipsis.
-            let label = book_label(dir, Some(info));
-            let max_width = rect.width() as i32 - padding;
-            let full = font.plan(&label, None, None);
-            let plan = font.plan(&label, Some(max_width), None);
-            assert!(plan.width <= max_width);
-            assert_eq!(full.width > max_width, truncated);
-            assert_eq!(plan.width < full.width, truncated);
-        }
-
-        // Nothing is drawn outside of the cell.
-        let rect = *view.children()[7].rect();
-        let mut pixmap = Pixmap::new(1072, 1448, 1);
-        view.children()[7].render(&mut pixmap, rect, &mut f.context.fonts);
-        for y in 0..pixmap.height {
-            for x in 0..pixmap.width {
-                if !rect.includes(pt!(x as i32, y as i32)) {
-                    assert_eq!(pixmap.get_pixel(x, y), WHITE, "({}, {}) is outside of {}", x, y, rect);
-                }
-            }
-        }
+        check_texts_aligned(&pixmap, &expected, metrics.em);
     }
 
     #[test]
     fn test_resize() {
         let mut f = Fixture::new("resize", (1072, 1448));
-        let previous = info("Dune", "dune.epub");
+        let title = "The Very Long Title of a Book That Goes On and On ".repeat(4);
+        let previous = info(title.trim_end(), "long.epub");
         let mut view = EndOfBook::new(Some(&previous), None, &mut f.context);
-        let metrics = Metrics::new(&mut f.context.fonts);
+        let metrics = view.metrics;
 
-        // Too narrow for the title, which comes back when there's room again.
-        let narrow = (2 * (metrics.label_width + 2 * metrics.padding).max(metrics.row_height) + metrics.title_width) as u32;
-        for (dims, has_title) in [((1448, 1072), true), ((narrow, 1072), false), ((1072, 1448), true)] {
+        for dims in [(1448, 1072), (600, 800), (1072, 1448)] {
             f.context.display.dims = dims;
             view.resize(rect![0, 0, dims.0 as i32, dims.1 as i32], &f.hub, &mut RenderQueue::new(), &mut f.context);
             let expected = layout(dims, &metrics);
             assert_eq!(view.rect, expected.rect);
-            assert_eq!(expected.title.is_some(), has_title, "{:?}", dims);
-            let mut expected_rects = expected.children();
-            expected_rects.extend(expected.title);
-            assert_eq!(rects(&view), expected_rects);
-            if has_title {
-                assert!(view.children().last().unwrap().is::<Label>());
-            }
+            assert_eq!(rects(&view), expected.children());
+            // The long title takes as much room as a menu can.
+            assert_eq!(view.rect.width() as i32, 2 * dims.0 as i32 / 3);
 
             // The rows keep their state.
-            assert_eq!(icon(&view, 5).name, "angle-left");
-            assert!(view.children()[9].is::<Filler>());
-            assert!(!button(&view, 7).disabled && button(&view, 11).disabled);
+            assert_eq!(icon(&view, 3).name, "angle-left-small");
+            assert!(view.children()[6].is::<Filler>());
+            assert!(!button(&view, 5).disabled && button(&view, 8).disabled);
             let [previous_row, next_row] = expected.books;
             assert!(all_open(&mut f, &mut view, &across(&previous_row.rect), CycleDir::Previous), "{:?}", dims);
             for pt in across(&next_row.rect) {
                 assert!(f.tap(&mut view, pt).is_empty(), "the tap at {:?} responds", pt);
             }
+
+            // The texts keep their column.
+            let pixmap = render(&view, &mut f.context.fonts, dims);
+            check_texts_aligned(&pixmap, &expected, metrics.em);
         }
     }
 }
