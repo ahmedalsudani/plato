@@ -137,9 +137,9 @@ To select text, tap and hold the first or last word of the selection. Wait for t
 
 Turning the page past the end of a book brings up the end-of-book screen:
 
-- *Previous* and *Next* open the books shown before and after the finished book in the home view it was opened from: same library, directory, search query and sort order, in the order they had when the book was opened. A book opened this way keeps that list, so you can go on through it. A button is disabled when there's no such book, e.g. at either end of the list.
-- *Library* goes back to the home view.
-- Tap the close icon, or outside of the screen, to stay on the last page.
+- The two lines below the top row open the books shown before and after the finished book in the home view it was opened from: same library, directory, search query and sort order, in the order they had when the book was opened. The first line, `< ` followed by the previous book's title, opens the previous book; the second, `> ` followed by the next book's title, opens the next one. A book without a title shows its file name, and a title too long for its line is cut short with an ellipsis. A book opened this way keeps that list, so you can go on through it. A line is disabled, and reads *No previous book* or *No next book*, when there's no such book, e.g. at either end of the list.
+- *Library*, at the top left, closes the book and goes back to the home view.
+- Tap the close icon, at the top right, or outside of the screen, to stay on the last page.
 
 The `finished` setting of the `[reader]` section of `Settings.toml` selects what happens when a book is finished: `end-of-book` (the default) shows this screen, `notify` shows a notification, and `close` goes back to the home view.
 

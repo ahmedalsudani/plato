@@ -18,7 +18,9 @@ The above chunk needs to be added after one of the `[[libraries]]` section.
 to. `program` is the path to the executable associated with this hook. The
 `sort-method`, `reverse-order`, `first-column` and `second-column` keys are
 optional. When specified, they will override the *home*'s settings of the same
-name, from the moment the hook is triggered until `path` is deselected.
+name while `path` is selected, whether or not the hook is triggered. When `path`
+is deselected, the settings it overrode, as they were before it was selected,
+are restored (with the sort method, its reverse order).
 
 The `import-on-exit` key is also optional and defaults to `false`. When set to
 `true`, *Plato* runs the import process as soon as `program` exits, whatever
@@ -27,7 +29,8 @@ its exit status, so that the files it put in the library without sending
 to the `[import]` settings. It has no effect in *filesystem* mode, and the
 import doesn't run when `program` is terminated because `path` was deselected.
 
-Selecting `path` doesn't trigger the hook. When `path` is the current
+Selecting `path` applies the hook's settings, but doesn't trigger the hook, and
+neither triggering it nor its exit changes them. When `path` is the current
 directory, the navigation bar shows a sync button on its right, separated from
 the directories by a vertical line: tapping it triggers the hook. The button is
 part of the navigation bar: if the latter is hidden, swipe down from the top bar

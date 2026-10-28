@@ -620,9 +620,9 @@ impl Reader {
             return;
         }
 
-        let has_previous = self.neighbor_book_info(CycleDir::Previous, context).is_some();
-        let has_next = self.neighbor_book_info(CycleDir::Next, context).is_some();
-        let end_of_book = EndOfBook::new(has_previous, has_next, context);
+        let previous = self.neighbor_book_info(CycleDir::Previous, context);
+        let next = self.neighbor_book_info(CycleDir::Next, context);
+        let end_of_book = EndOfBook::new(previous.as_ref(), next.as_ref(), context);
         rq.add(RenderData::new(end_of_book.id(), *end_of_book.rect(), UpdateMode::Gui));
         self.children.push(Box::new(end_of_book) as Box<dyn View>);
     }

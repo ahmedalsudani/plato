@@ -73,6 +73,7 @@ pub struct Home {
     current_directory: PathBuf,
     target_document: Option<PathBuf>,
     background_fetchers: FxHashMap<u32, Fetcher>,
+    saved_settings: SavedSettings,
 }
 
 #[derive(Debug)]
@@ -83,11 +84,18 @@ struct Fetcher {
     process: Child,
     // Cleared once the process has exited and its exit has been handled.
     running: bool,
+    import_on_exit: bool,
+}
+
+// The settings that the hooks of the current directory override, as they
+// were before it was selected: they're restored when it's deselected, whether
+// or not the hooks ran.
+#[derive(Debug, Default)]
+struct SavedSettings {
     sort_method: Option<SortMethod>,
     reverse_order: Option<bool>,
     first_column: Option<FirstColumn>,
     second_column: Option<SecondColumn>,
-    import_on_exit: bool,
 }
 
 impl Home {
@@ -215,6 +223,7 @@ impl Home {
             current_directory,
             target_document: None,
             background_fetchers: FxHashMap::default(),
+            saved_settings: SavedSettings::default(),
         })
     }
 
@@ -224,7 +233,9 @@ impl Home {
         }
 
         let old_path = mem::replace(&mut self.current_directory, path.to_path_buf());
-        self.terminate_fetchers(&old_path, true, hub, context);
+        self.terminate_fetchers(&old_path);
+        let restored = self.restore_hook_settings(true, hub, context);
+        self.apply_hook_settings(&restored, hub, context);
 
         let (files, dirs) = context.library.list(&self.current_directory,
                                                  self.query.as_ref(),
@@ -1208,7 +1219,8 @@ impl Home {
         let library = library.unwrap();
 
         let old_path = mem::take(&mut self.current_directory);
-        self.terminate_fetchers(&old_path, false, hub, context);
+        self.terminate_fetchers(&old_path);
+        self.restore_hook_settings(false, hub, context);
 
         let mut update_top_bar = false;
 
@@ -1260,7 +1272,7 @@ impl Home {
         context.library.flush();
     }
 
-    fn terminate_fetchers(&mut self, path: &Path, update: bool, hub: &Hub, context: &mut Context) {
+    fn terminate_fetchers(&mut self, path: &Path) {
         self.background_fetchers.retain(|id, fetcher| {
             if fetcher.full_path == path {
                 // The identifier of a process whose exit was handled might
@@ -1269,36 +1281,75 @@ impl Home {
                     unsafe { libc::kill(*id as libc::pid_t, libc::SIGTERM) };
                 }
                 fetcher.process.wait().ok();
-                if update {
-                    if let Some(sort_method) = fetcher.sort_method {
-                        hub.send(Event::Select(EntryId::Sort(sort_method))).ok();
-                    }
-                    if let Some(reverse_order) = fetcher.reverse_order {
-                        hub.send(Event::Select(EntryId::SetReverseOrder(reverse_order))).ok();
-                    }
-                    if let Some(first_column) = fetcher.first_column {
-                        hub.send(Event::Select(EntryId::FirstColumn(first_column))).ok();
-                    }
-                    if let Some(second_column) = fetcher.second_column {
-                        hub.send(Event::Select(EntryId::SecondColumn(second_column))).ok();
-                    }
-                } else {
-                    let selected_library = context.settings.selected_library;
-                    if let Some(sort_method) = fetcher.sort_method {
-                        context.settings.libraries[selected_library].sort_method = sort_method;
-                    }
-                    if let Some(first_column) = fetcher.first_column {
-                        context.settings.libraries[selected_library].first_column = first_column;
-                    }
-                    if let Some(second_column) = fetcher.second_column {
-                        context.settings.libraries[selected_library].second_column = second_column;
-                    }
-                }
                 false
             } else {
                 true
             }
         });
+    }
+
+    // Applies the settings of the hooks of the current directory, which was
+    // just selected, and saves the ones they override. The settings of
+    // `restored` are being restored for the previous directory: they're the
+    // ones to save, as they aren't in effect yet.
+    fn apply_hook_settings(&mut self, restored: &SavedSettings, hub: &Hub, context: &Context) {
+        let selected_library = context.settings.selected_library;
+        let library_settings = &context.settings.libraries[selected_library];
+        let mut saved = SavedSettings::default();
+        for hook in directory_hooks(&library_settings.hooks, &context.library.home, &self.current_directory) {
+            if let Some(sort_method) = hook.sort_method {
+                // Selecting a sort method also resets the reverse order.
+                saved.sort_method.get_or_insert(restored.sort_method.unwrap_or(self.sort_method));
+                saved.reverse_order.get_or_insert(restored.reverse_order.unwrap_or(self.reverse_order));
+                hub.send(Event::Select(EntryId::Sort(sort_method))).ok();
+            }
+            if let Some(reverse_order) = hook.reverse_order {
+                saved.reverse_order.get_or_insert(restored.reverse_order.unwrap_or(self.reverse_order));
+                hub.send(Event::Select(EntryId::SetReverseOrder(reverse_order))).ok();
+            }
+            if let Some(first_column) = hook.first_column {
+                saved.first_column.get_or_insert(restored.first_column.unwrap_or(library_settings.first_column));
+                hub.send(Event::Select(EntryId::FirstColumn(first_column))).ok();
+            }
+            if let Some(second_column) = hook.second_column {
+                saved.second_column.get_or_insert(restored.second_column.unwrap_or(library_settings.second_column));
+                hub.send(Event::Select(EntryId::SecondColumn(second_column))).ok();
+            }
+        }
+        self.saved_settings = saved;
+    }
+
+    // Restores the settings that the hooks of the directory being deselected
+    // overrode, and returns them. Without `update`, the library is being
+    // replaced: only its settings are restored.
+    fn restore_hook_settings(&mut self, update: bool, hub: &Hub, context: &mut Context) -> SavedSettings {
+        let saved = mem::take(&mut self.saved_settings);
+        if update {
+            if let Some(sort_method) = saved.sort_method {
+                hub.send(Event::Select(EntryId::Sort(sort_method))).ok();
+            }
+            if let Some(reverse_order) = saved.reverse_order {
+                hub.send(Event::Select(EntryId::SetReverseOrder(reverse_order))).ok();
+            }
+            if let Some(first_column) = saved.first_column {
+                hub.send(Event::Select(EntryId::FirstColumn(first_column))).ok();
+            }
+            if let Some(second_column) = saved.second_column {
+                hub.send(Event::Select(EntryId::SecondColumn(second_column))).ok();
+            }
+        } else {
+            let selected_library = context.settings.selected_library;
+            if let Some(sort_method) = saved.sort_method {
+                context.settings.libraries[selected_library].sort_method = sort_method;
+            }
+            if let Some(first_column) = saved.first_column {
+                context.settings.libraries[selected_library].first_column = first_column;
+            }
+            if let Some(second_column) = saved.second_column {
+                context.settings.libraries[selected_library].second_column = second_column;
+            }
+        }
+        saved
     }
 
     // Runs the hooks of the current directory, unless they're still running.
@@ -1327,39 +1378,13 @@ impl Home {
         let save_path = context.library.home.join(&hook.path);
         match self.spawn_child(library_path, &save_path, &hook.program, context.settings.wifi, context.online, hub) {
             Ok(process) => {
-                let mut sort_method = hook.sort_method;
-                let mut reverse_order = hook.reverse_order;
-                let mut first_column = hook.first_column;
-                let mut second_column = hook.second_column;
-                if let Some(sort_method) = sort_method.replace(self.sort_method) {
-                    hub.send(Event::Select(EntryId::Sort(sort_method))).ok();
-                }
-                if let Some(reverse_order) = reverse_order.replace(self.reverse_order) {
-                    hub.send(Event::Select(EntryId::SetReverseOrder(reverse_order))).ok();
-                }
-                let selected_library = context.settings.selected_library;
-                if let Some(first_column) = first_column.replace(context.settings.libraries[selected_library].first_column) {
-                    hub.send(Event::Select(EntryId::FirstColumn(first_column))).ok();
-                }
-                if let Some(second_column) = second_column.replace(context.settings.libraries[selected_library].second_column) {
-                    hub.send(Event::Select(EntryId::SecondColumn(second_column))).ok();
-                }
-                // The hook already ran since its directory was selected: the
-                // settings to restore on deselection are the ones saved then.
-                let previous_id = self.background_fetchers.iter()
-                                      .find(|(_, fetcher)| fetcher.full_path == save_path &&
-                                                           fetcher.program == hook.program)
-                                      .map(|(id, _)| *id);
-                if let Some(previous) = previous_id.and_then(|id| self.background_fetchers.remove(&id)) {
-                    sort_method = previous.sort_method;
-                    reverse_order = previous.reverse_order;
-                    first_column = previous.first_column;
-                    second_column = previous.second_column;
-                }
+                // The hook already ran since its directory was selected, and
+                // has exited: forget about that run.
+                self.background_fetchers.retain(|_, fetcher| fetcher.full_path != save_path ||
+                                                             fetcher.program != hook.program);
                 self.background_fetchers.insert(process.id(),
                                                 Fetcher { path: hook.path.clone(), full_path: save_path,
                                                           program: hook.program.clone(), process, running: true,
-                                                          sort_method, reverse_order, first_column, second_column,
                                                           import_on_exit: hook.import_on_exit });
             },
             Err(e) => eprintln!("Can't spawn child: {:#}.", e),
@@ -1999,7 +2024,7 @@ mod tests {
     use crate::library::Library;
     use crate::lightsensor::LightSensor;
     use crate::metadata::SortMethod;
-    use crate::settings::{Settings, LibrarySettings, LibraryMode, Hook};
+    use crate::settings::{Settings, LibrarySettings, LibraryMode, Hook, FirstColumn, SecondColumn};
     use crate::view::{View, Event, EntryId, Hub, RenderQueue, handle_event};
     use crate::view::common::locate;
     use crate::view::filler::Filler;
@@ -2080,6 +2105,10 @@ mod tests {
 
         fn path(&self, name: &str) -> PathBuf {
             self.context.library.home.join(name)
+        }
+
+        fn library_settings(&self) -> &LibrarySettings {
+            &self.context.settings.libraries[0]
         }
 
         // Handles `evt` as the application does.
@@ -2299,18 +2328,164 @@ mod tests {
         let fetchers = f.fetchers();
         assert_eq!(fetchers.len(), 1);
         assert!(!f.home.background_fetchers[&fetchers[0]].running);
-        // The hook's sort method applies until the directory is deselected.
+        // The hook's sort method applies until the directory is deselected,
+        // whether or not the hook runs.
         assert_eq!(f.home.sort_method, SortMethod::Added);
 
         f.tap_sync_button();
         assert_eq!(f.fetchers().len(), 1);
         assert!(f.home.background_fetchers.values().all(|fetcher| fetcher.running));
         f.pump_until_exit();
+        assert_eq!(f.home.sort_method, SortMethod::Added);
 
-        // The sort method from before the first run is restored.
+        // The sort method from before the directory was selected is restored.
         f.select("Books");
         f.pump();
         assert!(f.fetchers().is_empty());
         assert_eq!(f.home.sort_method, SortMethod::Opened);
+        assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
+    }
+
+    #[test]
+    fn test_selecting_hook_directory_applies_its_settings() {
+        let mut f = Fixture::new("apply", LONG_HOOK, &["Articles"]);
+        f.select("Articles");
+        f.pump();
+        // Without tapping the sync button.
+        assert!(f.fetchers().is_empty());
+        assert_eq!(f.home.sort_method, SortMethod::Added);
+        assert_eq!(f.library_settings().sort_method, SortMethod::Added);
+
+        // Through the library menu's Toggle Select sub-menu.
+        f.select("Books");
+        f.pump();
+        assert_eq!(f.home.sort_method, SortMethod::Opened);
+        let path = f.path("Articles");
+        f.send(Event::Select(EntryId::ToggleSelectDirectory(path)));
+        f.pump();
+        assert!(f.fetchers().is_empty());
+        assert_eq!(f.home.sort_method, SortMethod::Added);
+    }
+
+    #[test]
+    fn test_deselecting_hook_directory_restores_settings() {
+        let mut f = Fixture::new("restore", LONG_HOOK, &["Articles"]);
+        // The reverse order of the sort method is restored too.
+        f.send(Event::Select(EntryId::ReverseOrder));
+        assert!(!f.home.reverse_order);
+
+        for other in ["Books", "Articles/Saved"] {
+            f.select("Articles");
+            f.pump();
+            assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Added, true));
+
+            // A subdirectory of the hook's directory doesn't have its hook.
+            f.select(other);
+            f.pump();
+            assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Opened, false));
+            assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
+        }
+    }
+
+    #[test]
+    fn test_running_hook_does_not_change_restored_settings() {
+        let mut f = Fixture::new("run-restore", LONG_HOOK, &["Articles"]);
+        f.select("Articles");
+        f.pump();
+        f.tap_sync_button();
+        f.pump();
+        assert_eq!(f.fetchers().len(), 1);
+        assert_eq!(f.home.sort_method, SortMethod::Added);
+        // Tapping the button again, while the hook runs.
+        f.tap_sync_button();
+        f.pump();
+
+        // Leaving terminates the hook and restores the settings from before
+        // the directory was selected, not the hook's own.
+        f.select("Books");
+        f.pump();
+        assert!(f.fetchers().is_empty());
+        assert_eq!(f.home.sort_method, SortMethod::Opened);
+        assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
+    }
+
+    #[test]
+    fn test_hook_columns_are_applied_and_restored() {
+        let mut f = Fixture::new("columns", LONG_HOOK, &["Articles"]);
+        let hook = &mut f.context.settings.libraries[0].hooks[0];
+        hook.sort_method = None;
+        hook.reverse_order = Some(false);
+        hook.first_column = Some(FirstColumn::FileName);
+        hook.second_column = Some(SecondColumn::Year);
+
+        f.select("Articles");
+        f.pump();
+        assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Opened, false));
+        assert_eq!(f.library_settings().first_column, FirstColumn::FileName);
+        assert_eq!(f.library_settings().second_column, SecondColumn::Year);
+
+        f.select("Books");
+        f.pump();
+        assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Opened, true));
+        assert_eq!(f.library_settings().first_column, FirstColumn::TitleAndAuthor);
+        assert_eq!(f.library_settings().second_column, SecondColumn::Progress);
+    }
+
+    #[test]
+    fn test_moving_between_hook_directories() {
+        let mut f = Fixture::new("between", LONG_HOOK, &["Articles", "Books"]);
+        f.context.settings.libraries[0].hooks[1].sort_method = Some(SortMethod::Title);
+        f.select("Articles");
+        f.pump();
+        assert_eq!(f.home.sort_method, SortMethod::Added);
+
+        // The settings of the first directory are being restored as the
+        // second one is selected: they're the ones saved, not the first
+        // hook's.
+        f.select("Books");
+        f.pump();
+        assert_eq!(f.home.sort_method, SortMethod::Title);
+        f.select("Articles/Saved");
+        f.pump();
+        assert_eq!(f.home.sort_method, SortMethod::Opened);
+        assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
+    }
+
+    #[test]
+    fn test_directory_without_hook_is_unaffected() {
+        let mut f = Fixture::new("no-hook", LONG_HOOK, &["Articles"]);
+        f.select("Books");
+        f.pump();
+        assert_eq!(f.home.sort_method, SortMethod::Opened);
+
+        // A sort method picked there stays when the directory is deselected.
+        f.send(Event::Select(EntryId::Sort(SortMethod::Title)));
+        f.select("Articles/Saved");
+        f.pump();
+        assert_eq!(f.home.sort_method, SortMethod::Title);
+        assert_eq!(f.library_settings().sort_method, SortMethod::Title);
+    }
+
+    #[test]
+    fn test_loading_library_restores_settings() {
+        let mut f = Fixture::new("load-library", LONG_HOOK, &["Articles"]);
+        f.context.settings.libraries[0].hooks[0].first_column = Some(FirstColumn::FileName);
+        f.context.settings.libraries.push(LibrarySettings {
+            name: "Other".to_string(),
+            path: f.dir.join("other"),
+            mode: LibraryMode::Filesystem,
+            .. Default::default()
+        });
+        f.select("Articles");
+        f.pump();
+        assert_eq!(f.library_settings().sort_method, SortMethod::Added);
+        assert_eq!(f.library_settings().first_column, FirstColumn::FileName);
+
+        // The settings of the library that's left are restored.
+        f.send(Event::Select(EntryId::LoadLibrary(1)));
+        f.pump();
+        assert_eq!(f.context.settings.selected_library, 1);
+        assert_eq!(f.context.settings.libraries[0].sort_method, SortMethod::Opened);
+        assert_eq!(f.context.settings.libraries[0].first_column, FirstColumn::TitleAndAuthor);
     }
 }

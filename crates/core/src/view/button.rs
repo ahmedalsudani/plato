@@ -1,7 +1,7 @@
 use crate::device::CURRENT_DEVICE;
 use crate::geom::{Rectangle, CornerSpec, BorderSpec};
 use crate::font::{Fonts, font_from_style, NORMAL_STYLE};
-use super::{View, Event, Hub, Bus, Id, ID_FEEDER, RenderQueue, RenderData};
+use super::{View, Event, Hub, Bus, Id, ID_FEEDER, RenderQueue, RenderData, Align};
 use super::{THICKNESS_MEDIUM, BORDER_RADIUS_LARGE};
 use crate::framebuffer::{Framebuffer, UpdateMode};
 use crate::input::{DeviceEvent, FingerStatus};
@@ -16,6 +16,7 @@ pub struct Button {
     children: Vec<Box<dyn View>>,
     event: Event,
     text: String,
+    align: Align,
     active: bool,
     pub disabled: bool,
 }
@@ -28,6 +29,7 @@ impl Button {
             children: Vec::new(),
             event,
             text,
+            align: Align::Center,
             active: false,
             disabled: false,
         }
@@ -35,6 +37,11 @@ impl Button {
 
     pub fn disabled(mut self, value: bool) -> Button {
         self.disabled = value;
+        self
+    }
+
+    pub fn align(mut self, align: Align) -> Button {
+        self.align = align;
         self
     }
 }
@@ -93,7 +100,7 @@ impl View for Button {
 
         let plan = font.plan(&self.text, Some(max_width), None);
 
-        let dx = (self.rect.width() as i32 - plan.width) / 2;
+        let dx = self.align.offset(plan.width, self.rect.width() as i32);
         let dy = (self.rect.height() as i32 - x_height) / 2;
         let pt = pt!(self.rect.min.x + dx, self.rect.max.y - dy);
 
