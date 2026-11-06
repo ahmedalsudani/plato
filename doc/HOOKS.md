@@ -18,9 +18,16 @@ The above chunk needs to be added after one of the `[[libraries]]` section.
 to. `program` is the path to the executable associated with this hook. The
 `sort-method`, `reverse-order`, `first-column` and `second-column` keys are
 optional. When specified, they will override the *home*'s settings of the same
-name while `path` is selected, whether or not the hook is triggered. When `path`
-is deselected, the settings it overrode, as they were before it was selected,
-are restored (with the sort method, its reverse order).
+name while `path`, or one of its subdirectories, is selected, whether or not
+the hook is triggered. A directory uses the settings of the hooks of the
+nearest directory, among itself and its ancestors, that has hooks: a
+subdirectory of `path` with hooks of its own uses theirs, and so do its
+subdirectories. Moving between directories that use the settings of the same
+hooks leaves the settings in effect, including the ones changed there, alone.
+When a directory that uses the settings of other hooks, or of none, is
+selected, the overridden settings are restored as they were before any hook's
+settings were applied (with the sort method, its reverse order), then the other
+hooks' settings, if any, are applied.
 
 The `import-on-exit` key is also optional and defaults to `false`. When set to
 `true`, *Plato* runs the import process as soon as `program` exits, whatever
@@ -31,12 +38,12 @@ import doesn't run when `program` is terminated because `path` was deselected.
 
 Selecting `path` applies the hook's settings, but doesn't trigger the hook, and
 neither triggering it nor its exit changes them. When `path` is the current
-directory, the navigation bar shows a sync button on its right, separated from
-the directories by a vertical line: tapping it triggers the hook. The button is
-part of the navigation bar: if the latter is hidden, swipe down from the top bar
-to show it. To select `path`, tap the directory in the navigation bar, or, when
-there's no imported documents in `path`, use the *Toggle Select* sub-menu of the
-library menu.
+directory (not one of its subdirectories), the navigation bar shows a sync
+button on its right, separated from the directories by a vertical line: tapping
+it triggers the hook. The button is part of the navigation bar: if the latter
+is hidden, swipe down from the top bar to show it. To select `path`, tap the
+directory in the navigation bar, or, when there's no imported documents in
+`path`, use the *Toggle Select* sub-menu of the library menu.
 
 When the hook is triggered, the associated `program` is executed as a
 background process. It will receive the library path, directory path, wifi and

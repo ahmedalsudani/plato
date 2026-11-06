@@ -11,7 +11,7 @@ use std::fs;
 use std::mem;
 use std::thread;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Child, Stdio};
 use std::io::{BufRead, BufReader};
 use fxhash::FxHashMap;
@@ -57,6 +57,19 @@ pub fn directory_hooks<'a>(hooks: &'a [Hook], home: &'a Path, path: &'a Path) ->
     hooks.iter().filter(move |hook| home.join(&hook.path) == path)
 }
 
+// The hook directory of the directory at `path`, in the library whose home is
+// `home`: the nearest directory, among `path` and its ancestors within the
+// library, that has hooks among `hooks`. The settings of these hooks apply to
+// the directory. A path with `..` components has no hook directory.
+fn hook_directory<'a>(hooks: &[Hook], home: &Path, path: &'a Path) -> Option<&'a Path> {
+    if path.components().any(|c| c == Component::ParentDir) {
+        return None;
+    }
+    path.ancestors()
+        .take_while(|dir| dir.starts_with(home))
+        .find(|dir| directory_hooks(hooks, home, dir).next().is_some())
+}
+
 #[derive(Debug)]
 pub struct Home {
     id: Id,
@@ -87,9 +100,10 @@ struct Fetcher {
     import_on_exit: bool,
 }
 
-// The settings that the hooks of the current directory override, as they
-// were before it was selected: they're restored when it's deselected, whether
-// or not the hooks ran.
+// The settings that the hooks of the current directory's hook directory
+// override, as they were before that directory, or one of its subdirectories,
+// was selected: they're restored when a directory with another hook directory,
+// or none, is selected, whether or not the hooks ran.
 #[derive(Debug, Default)]
 struct SavedSettings {
     sort_method: Option<SortMethod>,
@@ -234,8 +248,16 @@ impl Home {
 
         let old_path = mem::replace(&mut self.current_directory, path.to_path_buf());
         self.terminate_fetchers(&old_path);
-        let restored = self.restore_hook_settings(true, hub, context);
-        self.apply_hook_settings(&restored, hub, context);
+
+        // Within the subdirectories of a hook directory, the settings in
+        // effect, which might have been changed there, stay.
+        let selected_library = context.settings.selected_library;
+        let hooks = &context.settings.libraries[selected_library].hooks;
+        let home = &context.library.home;
+        if hook_directory(hooks, home, &old_path) != hook_directory(hooks, home, &self.current_directory) {
+            let restored = self.restore_hook_settings(true, hub, context);
+            self.apply_hook_settings(&restored, hub, context);
+        }
 
         let (files, dirs) = context.library.list(&self.current_directory,
                                                  self.query.as_ref(),
@@ -1288,15 +1310,17 @@ impl Home {
         });
     }
 
-    // Applies the settings of the hooks of the current directory, which was
-    // just selected, and saves the ones they override. The settings of
-    // `restored` are being restored for the previous directory: they're the
-    // ones to save, as they aren't in effect yet.
+    // Applies the settings of the hooks of the hook directory of the current
+    // directory, which was just selected, and saves the ones they override.
+    // The settings of `restored` are being restored for the previous
+    // directory: they're the ones to save, as they aren't in effect yet.
     fn apply_hook_settings(&mut self, restored: &SavedSettings, hub: &Hub, context: &Context) {
         let selected_library = context.settings.selected_library;
         let library_settings = &context.settings.libraries[selected_library];
+        let (hooks, home) = (&library_settings.hooks, &context.library.home);
         let mut saved = SavedSettings::default();
-        for hook in directory_hooks(&library_settings.hooks, &context.library.home, &self.current_directory) {
+        let hook_dir = hook_directory(hooks, home, &self.current_directory);
+        for hook in hook_dir.into_iter().flat_map(|dir| directory_hooks(hooks, home, dir)) {
             if let Some(sort_method) = hook.sort_method {
                 // Selecting a sort method also resets the reverse order.
                 saved.sort_method.get_or_insert(restored.sort_method.unwrap_or(self.sort_method));
@@ -1319,7 +1343,7 @@ impl Home {
         self.saved_settings = saved;
     }
 
-    // Restores the settings that the hooks of the directory being deselected
+    // Restores the settings that the hooks of the hook directory being left
     // overrode, and returns them. Without `update`, the library is being
     // replaced: only its settings are restored.
     fn restore_hook_settings(&mut self, update: bool, hub: &Hub, context: &mut Context) -> SavedSettings {
@@ -2030,7 +2054,7 @@ mod tests {
     use crate::view::filler::Filler;
     use crate::view::icon::Icon;
     use crate::view::notification::Notification;
-    use super::{Home, directory_hooks};
+    use super::{Home, directory_hooks, hook_directory};
     use super::navigation_bar::NavigationBar;
     use super::directories_bar::DirectoriesBar;
 
@@ -2045,8 +2069,9 @@ mod tests {
     static HOOKS_LOCK: Mutex<()> = Mutex::new(());
 
     // A home view on a library, in filesystem mode, holding the `Articles`,
-    // `Articles/Saved` and `Books` directories. The directories of
-    // `hook_dirs` have a hook that runs `script` and sorts by date added.
+    // `Articles/Saved` and `Books` directories, and the ones added with
+    // `create_dir`. The directories of `hook_dirs` have a hook that runs
+    // `script` and sorts by date added.
     struct Fixture {
         dir: PathBuf,
         home: Home,
@@ -2139,9 +2164,24 @@ mod tests {
             self.pump();
         }
 
+        // Creates the directory `name`, and its missing parents, in the library.
+        fn create_dir(&self, name: &str) {
+            fs::create_dir_all(self.path(name)).unwrap();
+        }
+
         fn select(&mut self, name: &str) {
             let path = self.path(name);
             self.send(Event::SelectDirectory(path));
+        }
+
+        fn select_home(&mut self) {
+            let home = self.context.library.home.clone();
+            self.send(Event::SelectDirectory(home));
+        }
+
+        // Whether the view sent events to the hub, which are dropped.
+        fn sent_events(&self) -> bool {
+            self.receiver.try_iter().count() > 0
         }
 
         fn nav_bar(&self) -> &NavigationBar {
@@ -2242,6 +2282,36 @@ mod tests {
     }
 
     #[test]
+    fn test_hook_directory() {
+        let hook = |path: &str| Hook {
+            path: PathBuf::from(path),
+            program: PathBuf::from("fetcher"),
+            .. Default::default()
+        };
+        let hooks = vec![hook("Articles"), hook("Articles/Saved/Old"), hook("Books"), hook("Books")];
+        let hook_dir = |path: &str| {
+            hook_directory(&hooks, Path::new("/mnt/onboard"), Path::new(path)).map(Path::to_path_buf)
+        };
+        let some = |path: &str| Some(PathBuf::from(path));
+        assert_eq!(hook_dir("/mnt/onboard/Articles"), some("/mnt/onboard/Articles"));
+        assert_eq!(hook_dir("/mnt/onboard/Books"), some("/mnt/onboard/Books"));
+        // The subdirectories of a hook's directory, at any depth.
+        assert_eq!(hook_dir("/mnt/onboard/Articles/Saved"), some("/mnt/onboard/Articles"));
+        assert_eq!(hook_dir("/mnt/onboard/Articles/Saved/"), some("/mnt/onboard/Articles"));
+        assert_eq!(hook_dir("/mnt/onboard/Articles/Other/2024"), some("/mnt/onboard/Articles"));
+        // The nearest one.
+        assert_eq!(hook_dir("/mnt/onboard/Articles/Saved/Old"), some("/mnt/onboard/Articles/Saved/Old"));
+        assert_eq!(hook_dir("/mnt/onboard/Articles/Saved/Old/2024"), some("/mnt/onboard/Articles/Saved/Old"));
+        // Paths are compared component-wise.
+        assert_eq!(hook_dir("/mnt/onboard/Articles2"), None);
+        assert_eq!(hook_dir("/mnt/onboard/Articles2/Saved"), None);
+        assert_eq!(hook_dir("/mnt/onboard"), None);
+        assert_eq!(hook_dir("/mnt/onboard/Music"), None);
+        assert_eq!(hook_dir("/mnt/onboard/Articles/../Music"), None);
+        assert_eq!(hook_dir("/mnt/sd/Articles"), None);
+    }
+
+    #[test]
     fn test_sync_button_layout() {
         let mut f = Fixture::new("layout", LONG_HOOK, &["Articles", "Books"]);
         f.assert_no_sync_button(1);
@@ -2250,7 +2320,8 @@ mod tests {
         f.select("Articles");
         f.assert_sync_button(2);
 
-        // The subdirectories of a hook's directory don't have its hook.
+        // The subdirectories of a hook's directory don't have its sync
+        // button, although its settings apply to them.
         f.select("Articles/Saved");
         f.assert_no_sync_button(2);
 
@@ -2374,13 +2445,13 @@ mod tests {
         f.send(Event::Select(EntryId::ReverseOrder));
         assert!(!f.home.reverse_order);
 
-        for other in ["Books", "Articles/Saved"] {
+        let home = f.context.library.home.clone();
+        for other in [f.path("Books"), home] {
             f.select("Articles");
             f.pump();
             assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Added, true));
 
-            // A subdirectory of the hook's directory doesn't have its hook.
-            f.select(other);
+            f.send(Event::SelectDirectory(other));
             f.pump();
             assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Opened, false));
             assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
@@ -2445,7 +2516,11 @@ mod tests {
         f.select("Books");
         f.pump();
         assert_eq!(f.home.sort_method, SortMethod::Title);
+        // Same, from the second directory to a subdirectory of the first.
         f.select("Articles/Saved");
+        f.pump();
+        assert_eq!(f.home.sort_method, SortMethod::Added);
+        f.select_home();
         f.pump();
         assert_eq!(f.home.sort_method, SortMethod::Opened);
         assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
@@ -2460,7 +2535,7 @@ mod tests {
 
         // A sort method picked there stays when the directory is deselected.
         f.send(Event::Select(EntryId::Sort(SortMethod::Title)));
-        f.select("Articles/Saved");
+        f.select_home();
         f.pump();
         assert_eq!(f.home.sort_method, SortMethod::Title);
         assert_eq!(f.library_settings().sort_method, SortMethod::Title);
@@ -2482,6 +2557,171 @@ mod tests {
         assert_eq!(f.library_settings().first_column, FirstColumn::FileName);
 
         // The settings of the library that's left are restored.
+        f.send(Event::Select(EntryId::LoadLibrary(1)));
+        f.pump();
+        assert_eq!(f.context.settings.selected_library, 1);
+        assert_eq!(f.context.settings.libraries[0].sort_method, SortMethod::Opened);
+        assert_eq!(f.context.settings.libraries[0].first_column, FirstColumn::TitleAndAuthor);
+    }
+
+    #[test]
+    fn test_subdirectories_of_hook_directory_get_its_settings() {
+        let mut f = Fixture::new("subdirs", LONG_HOOK, &["Articles"]);
+        f.create_dir("Articles/Saved/Old");
+        let hook = &mut f.context.settings.libraries[0].hooks[0];
+        hook.reverse_order = Some(false);
+        hook.first_column = Some(FirstColumn::FileName);
+        hook.second_column = Some(SecondColumn::Year);
+
+        for name in ["Articles/Saved", "Articles/Saved/Old"] {
+            // Straight from a directory without hooks.
+            f.select("Books");
+            f.pump();
+            assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Opened, true));
+
+            f.select(name);
+            f.pump();
+            assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Added, false));
+            assert_eq!(f.library_settings().sort_method, SortMethod::Added);
+            assert_eq!(f.library_settings().first_column, FirstColumn::FileName);
+            assert_eq!(f.library_settings().second_column, SecondColumn::Year);
+            // Without running the hook, nor showing its sync button.
+            assert!(f.fetchers().is_empty());
+            assert!(f.sync_button().is_none());
+        }
+
+        // Leaving them restores the library's settings.
+        f.select_home();
+        f.pump();
+        assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Opened, true));
+        assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
+        assert_eq!(f.library_settings().first_column, FirstColumn::TitleAndAuthor);
+        assert_eq!(f.library_settings().second_column, SecondColumn::Progress);
+    }
+
+    #[test]
+    fn test_moving_within_hook_directory_keeps_settings() {
+        let mut f = Fixture::new("within", LONG_HOOK, &["Articles"]);
+        f.create_dir("Articles/Saved/Old");
+        f.create_dir("Articles/Other");
+        f.select("Articles");
+        f.pump();
+        assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Added, true));
+
+        // A change made there survives the moves between the hook's directory
+        // and its subdirectories, which neither restore nor apply settings.
+        f.send(Event::Select(EntryId::Sort(SortMethod::Title)));
+        f.send(Event::Select(EntryId::ReverseOrder));
+        let changed = (f.home.sort_method, f.home.reverse_order);
+        assert_eq!(changed.0, SortMethod::Title);
+        for name in ["Articles/Saved", "Articles/Saved/Old", "Articles/Saved", "Articles",
+                     "Articles/Other", "Articles/Saved", "Articles/Saved/Old", "Articles/Other"] {
+            f.select(name);
+            assert!(!f.sent_events());
+            assert_eq!(f.home.current_directory, f.path(name));
+            assert_eq!((f.home.sort_method, f.home.reverse_order), changed);
+            assert_eq!(f.library_settings().sort_method, SortMethod::Title);
+        }
+
+        // Deselecting a subdirectory selects its parent.
+        let path = f.path("Articles/Other");
+        f.send(Event::ToggleSelectDirectory(path));
+        assert!(!f.sent_events());
+        assert_eq!(f.home.current_directory, f.path("Articles"));
+        assert_eq!((f.home.sort_method, f.home.reverse_order), changed);
+
+        // Leaving them restores the settings from before the hook's directory
+        // was selected.
+        f.select("Articles/Saved");
+        f.select("Books");
+        f.pump();
+        assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Opened, true));
+        assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
+    }
+
+    #[test]
+    fn test_directory_sharing_prefix_with_hook_directory_is_unaffected() {
+        let mut f = Fixture::new("prefix", LONG_HOOK, &["Articles"]);
+        f.create_dir("Articles2/Saved");
+        for name in ["Articles2", "Articles2/Saved"] {
+            f.select(name);
+            f.pump();
+            assert_eq!(f.home.sort_method, SortMethod::Opened);
+        }
+
+        f.select("Articles/Saved");
+        f.pump();
+        assert_eq!(f.home.sort_method, SortMethod::Added);
+        for name in ["Articles2", "Articles2/Saved"] {
+            f.select(name);
+            f.pump();
+            assert_eq!(f.home.sort_method, SortMethod::Opened);
+            assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
+        }
+    }
+
+    #[test]
+    fn test_nested_hook_directory() {
+        let mut f = Fixture::new("nested", LONG_HOOK, &["Articles", "Articles/Saved"]);
+        f.create_dir("Articles/Saved/Old");
+        f.create_dir("Articles/Other");
+        let hooks = &mut f.context.settings.libraries[0].hooks;
+        hooks[0].first_column = Some(FirstColumn::FileName);
+        hooks[1].sort_method = Some(SortMethod::Title);
+        // The reverse order of the library's sort method is restored too.
+        f.send(Event::Select(EntryId::ReverseOrder));
+        assert!(!f.home.reverse_order);
+
+        let outer = |f: &mut Fixture, name: &str| {
+            f.select(name);
+            f.pump();
+            assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Added, true));
+            assert_eq!(f.library_settings().first_column, FirstColumn::FileName);
+        };
+        // The nested hook directory and its subdirectories only get the
+        // settings of its own hooks.
+        let nested = |f: &mut Fixture, name: &str| {
+            f.select(name);
+            f.pump();
+            assert_eq!(f.home.sort_method, SortMethod::Title);
+            assert_eq!(f.library_settings().first_column, FirstColumn::TitleAndAuthor);
+        };
+
+        outer(&mut f, "Articles/Other");
+        nested(&mut f, "Articles/Saved");
+        assert!(f.sync_button().is_some());
+        nested(&mut f, "Articles/Saved/Old");
+        assert!(f.sync_button().is_none());
+        outer(&mut f, "Articles");
+        nested(&mut f, "Articles/Saved/Old");
+        outer(&mut f, "Articles/Other");
+
+        // Leaving them restores the settings from before the first hook
+        // directory was selected.
+        f.select("Books");
+        f.pump();
+        assert_eq!((f.home.sort_method, f.home.reverse_order), (SortMethod::Opened, false));
+        assert_eq!(f.library_settings().sort_method, SortMethod::Opened);
+        assert_eq!(f.library_settings().first_column, FirstColumn::TitleAndAuthor);
+    }
+
+    #[test]
+    fn test_loading_library_from_subdirectory_restores_settings() {
+        let mut f = Fixture::new("load-library-subdir", LONG_HOOK, &["Articles"]);
+        f.context.settings.libraries[0].hooks[0].first_column = Some(FirstColumn::FileName);
+        f.context.settings.libraries.push(LibrarySettings {
+            name: "Other".to_string(),
+            path: f.dir.join("other"),
+            mode: LibraryMode::Filesystem,
+            .. Default::default()
+        });
+        f.select("Articles");
+        f.pump();
+        f.select("Articles/Saved");
+        f.pump();
+        assert_eq!(f.library_settings().sort_method, SortMethod::Added);
+        assert_eq!(f.library_settings().first_column, FirstColumn::FileName);
+
         f.send(Event::Select(EntryId::LoadLibrary(1)));
         f.pump();
         assert_eq!(f.context.settings.selected_library, 1);
